@@ -2,31 +2,33 @@
 # requires-python = ">=3.10,<3.13"
 # dependencies = [
 #   "faster-whisper>=1.1,<2",
-#   "av<17",  # faster-whisper 1.2.1이 av.open(metadata_errors=)를 써서 av 19에서 깨진다(확인: 2026-10-12)
+#   "av<17",
 #   "fastapi>=0.110",
 #   "uvicorn>=0.29",
 #   "python-multipart>=0.0.9",
 #   "psutil>=5.9",
 # ]
 # ///
-"""유달리용 로컬 전사 서버(OpenAI 호환 + 모델 받기·장비 적합 상태). 실행: uv run server.py
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# av<17: faster-whisper 1.2.1이 av.open(metadata_errors=)를 써서 av 19에서 깨진다(확인: 2026-10-12).
+# 의존성 목록은 pyproject.toml과 같아야 한다(test_plan.py가 검사).
+"""유달리용 로컬 전사 서버(OpenAI 호환 + 모델 받기·장비 적합 상태).
 
+실행: uv run server.py (HTTP 서버) · uv run server.py connect (유달리에 내 PC로 연결, 포트를 열지 않음)
 디코딩·VAD·정밀도·GPU 병렬은 faster-whisper(CTranslate2), 받기·캐시는 huggingface_hub를 그대로 쓴다.
-이 파일은 그 위에 HTTP 규약, 장비 감지, 메모리 계획, OOM 강등만 얹는다. 환경변수는 README 참고.
+장치별 실행부는 backends.py. 이 파일은 그 위에 HTTP 규약, 메모리 계획, OOM 강등만 얹는다. 환경변수는 README 참고.
 """
 
 import asyncio
 import contextlib
 import fnmatch
-import importlib.util
 import logging
 import math
 import os
-import secrets
-import shutil
-import subprocess
-import threading
 import re
+import secrets
+import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -37,27 +39,34 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+import backends
+from backends import NEMOTRON, OOM
+
+VERSION = "0.1.0"
 env = os.environ.get
-NEMOTRON = "nvidia/nemotron-3.5-asr-streaming-0.6b"
 # Nemotron은 PyTorch·Transformers가 있는 이미지(udally-stt:nemotron)에서만 목록에 넣는다.
-HAS_TORCH = all(importlib.util.find_spec(m) for m in ("torch", "transformers"))
+HAS_TORCH = backends.has("torch", "transformers")
+DEVICE = env("STT_DEVICE", "auto")  # auto | cuda | rocm | openvino | cpu
+BACKEND = backends.pick(DEVICE)  # Whisper 프리셋을 돌릴 실행부
+if BACKEND.name == "rocm":
+    backends.ensure_rocm(env("HF_HOME") or str(Path.home() / ".cache" / "udally-stt"))
+TORCH = backends.Torch()
 PRESETS = [m for m in (x.strip() for x in env(
     "STT_MODELS",
     "Systran/faster-whisper-small,Systran/faster-whisper-medium,"
     f"deepdml/faster-whisper-large-v3-turbo-ct2,Systran/faster-whisper-large-v3,{NEMOTRON}",
-).split(",")) if m and (m != NEMOTRON or HAS_TORCH)]
+).split(",")) if m and (TORCH.supports(m) and HAS_TORCH and BACKEND.name in ("cuda", "cpu") or BACKEND.supports(m))]
 API_KEY = env("STT_API_KEY") or None
-DEVICE = env("STT_DEVICE", "auto")  # auto | cuda | cpu
 FORCED_CT = env("STT_COMPUTE_TYPE") or None
-GPU_FILTER = {int(i) for i in env("STT_GPUS", "").split(",") if i.strip()}  # 비우면 전부
 CPU_FALLBACK = env("STT_CPU_FALLBACK", "1") == "1"
 CONCURRENCY = int(env("STT_CONCURRENCY", "3"))
-GPU_CTS = ["float16", "int8_float16", "int8"]  # 메모리가 모자라면 이 순서로 낮춘다
-FILES = ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*"]
-# Transformers 오프라인 전사에 필요한 파일만(.nemo·gguf 사본은 받지 않는다)
-NEMOTRON_FILES = ["config.json", "generation_config.json", "processor_config.json", "tokenizer*.json", "model.safetensors"]
+GPU_CTS = backends.CT2.gpu_cts
 log = logging.getLogger("udally-stt")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+def runtime(model_id: str):
+    return TORCH if TORCH.supports(model_id) else BACKEND
 
 
 # ---------- 메모리 계획(순수 함수: test_plan.py가 검사) ----------
@@ -65,25 +74,26 @@ def need_mb(weights_mb: float, ct: str, conc: int, cpu: bool = False) -> int:
     """필요 메모리 추정. weights_mb = model.bin 크기(fp16 저장 기준).
     근거(README 표): 이 PC 실측 turbo fp16 로드 +2.0GB·3동시 +0.35GB, int8_float16 +1.05GB/+0.22GB,
     faster-whisper 벤치 large-v2 fp16 4.5GB·small CPU int8 1.5GB."""
-    w = weights_mb * {"float32": 2, "float16": 1, "bfloat16": 1}.get(ct, 0.5)
+    w = weights_mb * {"float32": 2, "float16": 1, "bfloat16": 1, "int4": 0.25}.get(ct, 0.5)
     return round(w * 1.25 + 150 * conc + (800 if cpu else 300))
 
 
 def plan(weights_mb, gpus, ram_free_mb, level=0, device=DEVICE, forced=FORCED_CT,
-         cpu_fallback=CPU_FALLBACK, conc=CONCURRENCY, gpu_cts=GPU_CTS, cpu_ct="int8") -> dict:
-    """gpus: [{"index", "free_mb"}]. level: OOM으로 강등된 단계(0=float16부터)."""
+         cpu_fallback=CPU_FALLBACK, conc=CONCURRENCY, gpu_cts=GPU_CTS, cpu_ct="int8", prefix="cuda") -> dict:
+    """gpus: [{"index", "free_mb"}]. level: OOM으로 강등된 단계(0=float16부터). prefix: device 표시 접두어(cuda·rocm·openvino:GPU.)."""
     if weights_mb is None:
         return {"fits": None, "device": None, "compute_type": None}
+    sep = "" if prefix.endswith(".") else ":"
     if device != "cpu" and gpus:
         for ct in [forced] if forced else gpu_cts[level:]:
             per_gpu = math.ceil(conc / len(gpus))
             ok = [g["index"] for g in gpus if g["free_mb"] >= need_mb(weights_mb, ct, per_gpu)]
             if ok:
                 per_gpu = math.ceil(conc / len(ok))
-                return {"fits": True, "device": "cuda:" + ",".join(map(str, ok)), "compute_type": ct,
+                return {"fits": True, "device": prefix + sep + ",".join(map(str, ok)), "compute_type": ct,
                         "gpus": ok, "workers": per_gpu, "need_mb": need_mb(weights_mb, ct, per_gpu)}
     if device != "cpu" and gpus and not cpu_fallback:  # GPU가 있는데 모자라면 CPU로 내리지 않는다
-        return {"fits": False, "device": "cuda", "compute_type": None}
+        return {"fits": False, "device": prefix.rstrip(":."), "compute_type": None}
     ct = forced if forced in ("int8", "float32") else cpu_ct
     need = need_mb(weights_mb, ct, conc, cpu=True)
     return {"fits": need <= ram_free_mb, "device": "cpu", "compute_type": ct, "gpus": [],
@@ -91,19 +101,14 @@ def plan(weights_mb, gpus, ram_free_mb, level=0, device=DEVICE, forced=FORCED_CT
 
 
 # ---------- 장비 ----------
-def gpus() -> list[dict]:
-    if DEVICE == "cpu" or gpu_broken or not shutil.which("nvidia-smi"):
+gpu_broken: list[str] = []  # GPU 실행이 OOM 말고 다른 이유로 실패하면(라이브러리 누락 등) 이후 CPU만 쓴다
+
+
+def gpus(rt=None) -> list[dict]:
+    rt = rt or BACKEND
+    if DEVICE == "cpu" or gpu_broken or rt.name == "cpu":
         return []
-    try:
-        out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,name,memory.total,memory.free", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5,
-        ).stdout
-    except Exception:
-        return []
-    rows = [[c.strip() for c in line.split(",")] for line in out.strip().splitlines() if line.strip()]
-    return [{"index": int(r[0]), "name": r[1], "total_mb": int(r[2]), "free_mb": int(r[3])}
-            for r in rows if len(r) == 4 and (not GPU_FILTER or int(r[0]) in GPU_FILTER)]
+    return backends.filtered(rt.gpus())
 
 
 def ram_free_mb() -> int:
@@ -112,15 +117,14 @@ def ram_free_mb() -> int:
 
 # ---------- 상태 ----------
 lock = threading.Lock()
-sizes: dict[str, int] = {}  # 모델 → 받을 파일 전체 바이트(model.bin 크기는 weights[])
-weights: dict[str, float] = {}  # 모델 → model.bin MB
-downloading: set[str] = set()
+sizes: dict[str, int] = {}  # 모델 → 받을 파일 전체 바이트
+weights: dict[str, float] = {}  # 모델 → 가중치 MB(fp16 기준)
+downloading: dict[str, str | None] = {}  # 모델 → 받는 정밀도(저장소가 정밀도마다 다른 실행부만 의미가 있다)
 errors: dict[str, str] = {}
 levels: dict[str, int] = {}  # OOM 강등 단계
 rtf: dict[str, float] = {}  # 처리시간/오디오길이 이동평균
-current: dict = {}  # ponytail: 한 번에 한 모델만 올린다 {"id", "plan", "workers": [[WhisperModel, 진행 수]]}. 번갈아 쓰면 바꿀 때마다 다시 올린다.
+current: dict = {}  # ponytail: 한 번에 한 모델만 올린다 {"id", "plan", "workers": [[모델, 진행 수, 스레드 묶음]]}. 번갈아 쓰면 바꿀 때마다 다시 올린다.
 load_lock = threading.Lock()
-gpu_broken: list[str] = []  # GPU 실행이 OOM 말고 다른 이유로 실패하면(라이브러리 누락 등) 이후 CPU만 쓴다
 
 
 def auth(authorization: str | None = Header(None)) -> None:
@@ -128,65 +132,80 @@ def auth(authorization: str | None = Header(None)) -> None:
         raise HTTPException(401, "API 키가 맞지 않습니다(Authorization: Bearer <키>).")
 
 
-def download(model_id: str, local_files_only: bool = False) -> str:
-    if model_id == NEMOTRON:
-        from huggingface_hub import snapshot_download
-        p = snapshot_download(model_id, allow_patterns=NEMOTRON_FILES, local_files_only=local_files_only)
-        if not (Path(p) / "model.safetensors").exists():
-            raise FileNotFoundError(p)
-        return p
-    from faster_whisper import download_model
-    return download_model(model_id, local_files_only=local_files_only)
+def cts_of(model_id: str, ct=None) -> list:
+    """찾아볼 정밀도. 저장소가 하나면(CT2·Torch) [None] 하나다."""
+    rt = runtime(model_id)
+    if rt.repo(model_id, rt.cpu_ct) == rt.repo(model_id, rt.gpu_cts[0]):
+        return [None]
+    return [ct] if ct else list(dict.fromkeys([*rt.gpu_cts, rt.cpu_ct]))
 
 
-def weights_file(model_id: str) -> str:
-    return "model.safetensors" if model_id == NEMOTRON else "model.bin"
+def download(model_id: str, ct=None, local_files_only: bool = False) -> str:
+    from huggingface_hub import snapshot_download
+    rt = runtime(model_id)
+    p = snapshot_download(rt.repo(model_id, ct or rt.cpu_ct), allow_patterns=rt.files(model_id), local_files_only=local_files_only)
+    rt.weights(file_sizes(p), model_id, ct or rt.cpu_ct)  # 가중치 파일이 없으면 여기서 실패한다(받다 끊긴 경우)
+    return p
 
 
-def to_fp16_mb(model_id: str, size: int) -> float:
-    # need_mb는 float16 저장 크기 기준이다. Nemotron safetensors는 float32라 절반으로 본다.
-    return size / 2**20 / (2 if model_id == NEMOTRON else 1)
+def file_sizes(path) -> dict:
+    return {f.name: f.stat().st_size for f in Path(path).iterdir() if f.is_file()}
 
 
-def local_path(model_id: str) -> str | None:
-    try:
-        return download(model_id, local_files_only=True)
-    except Exception:
-        return None
+def local(model_id: str, ct=None) -> tuple | None:
+    """받아 둔 (정밀도, 경로). 저장소가 정밀도마다 다르면 높은 정밀도부터 찾는다."""
+    for c in cts_of(model_id, ct):
+        try:
+            return c, download(model_id, c, local_files_only=True)
+        except Exception:
+            continue
+    return None
+
+
+def local_path(model_id: str, ct=None) -> str | None:
+    hit = local(model_id, ct)
+    return hit[1] if hit else None
 
 
 def plan_for(model_id: str, gpus_, ram, level=0) -> dict:
-    if model_id == NEMOTRON:  # PyTorch: GPU float16, CPU float32. int8 단계는 없다.
-        return plan(weights.get(model_id), gpus_, ram, level, forced=None, gpu_cts=["float16"], cpu_ct="float32")
-    return plan(weights.get(model_id), gpus_, ram, level)
+    rt = runtime(model_id)
+    gpu_cts, cpu_ct = rt.gpu_cts, rt.cpu_ct
+    if cts_of(model_id) != [None]:  # 정밀도마다 저장소가 다르면 받아 둔 정밀도 안에서만 고른다(받기 전이면 전부)
+        have = [c for c in gpu_cts if local(model_id, c)]
+        if have:
+            gpu_cts, cpu_ct = have, have[-1]
+    forced = FORCED_CT if rt is BACKEND and isinstance(rt, backends.CT2) else None
+    return plan(weights.get(model_id), gpus_, ram, level, forced=forced, gpu_cts=gpu_cts, cpu_ct=cpu_ct, prefix=rt.prefix)
 
 
 def fill_sizes() -> None:
     """프리셋 크기를 한 번 알아 둔다(받은 모델은 디스크, 아니면 Hugging Face API)."""
     from huggingface_hub import HfApi
     for m in PRESETS:
+        rt = runtime(m)
         try:
-            p = local_path(m)
-            if p and m not in sizes:
-                weights[m] = to_fp16_mb(m, (Path(p) / weights_file(m)).stat().st_size)
+            hit = local(m)
+            if hit and m not in sizes:
+                weights[m] = rt.weights(file_sizes(hit[1]), m, hit[0] or rt.cpu_ct)
                 continue
-            info = HfApi().model_info(m, files_metadata=True)
-            pats = NEMOTRON_FILES if m == NEMOTRON else FILES
-            files = [s for s in info.siblings if any(fnmatch.fnmatch(s.rfilename, pat) for pat in pats)]
-            sizes[m] = sum(s.size or 0 for s in files)
-            weights[m] = to_fp16_mb(m, sum(s.size or 0 for s in files if s.rfilename == weights_file(m)))
+            info = HfApi().model_info(rt.repo(m, rt.cpu_ct), files_metadata=True)
+            files = {s.rfilename: s.size or 0 for s in info.siblings
+                     if any(fnmatch.fnmatch(s.rfilename, pat) for pat in rt.files(m))}
+            sizes[m] = sum(files.values())
+            weights[m] = rt.weights(files, m, rt.cpu_ct)
         except Exception as e:
             log.warning("크기 확인 실패 %s: %s", m, e)
 
 
-def blobs_size(model_id: str) -> int:
+def blobs_size(repo: str) -> int:
     from huggingface_hub import constants
-    d = Path(constants.HF_HUB_CACHE) / f"models--{model_id.replace('/', '--')}" / "blobs"
+    d = Path(constants.HF_HUB_CACHE) / f"models--{repo.replace('/', '--')}" / "blobs"
     return sum(f.stat().st_size for f in d.glob("*") if f.is_file()) if d.is_dir() else 0
 
 
 def meta(model_id: str) -> dict:
-    """사람이 읽는 표시 정보. id는 받을 Hugging Face 저장소(CTranslate2 변환본), base_model은 원본."""
+    """사람이 읽는 표시 정보. id는 프리셋 id(CTranslate2 변환본 저장소), base_model은 원본. 실행부가 다른 저장소를 받아도 id는 그대로다."""
+    fmt = {"openvino": "OpenVINO"}.get(BACKEND.name, "CTranslate2")
     if model_id == NEMOTRON:
         return {"owned_by": "nvidia", "family": "Nemotron", "display_name": "NVIDIA Nemotron 3.5 ASR 0.6B",
                 "base_model": NEMOTRON, "source": NEMOTRON, "format": "Transformers"}
@@ -194,23 +213,25 @@ def meta(model_id: str) -> dict:
     if not m:  # ponytail: 프리셋은 전부 Whisper 변환본이다. 다른 계열을 넣으면 여기에 규칙을 더한다.
         return {"owned_by": model_id.split("/")[0], "family": None, "display_name": model_id, "source": model_id}
     return {"owned_by": "openai", "family": "Whisper", "display_name": f"OpenAI Whisper {m.group(1)}",
-            "base_model": f"openai/whisper-{m.group(1)}", "source": model_id, "format": "CTranslate2"}
+            "base_model": f"openai/whisper-{m.group(1)}", "source": runtime(model_id).repo(model_id, runtime(model_id).cpu_ct),
+            "format": fmt}
 
 
 def status_of(model_id: str, hw=None) -> dict:
     item = {"id": model_id, "object": "model", **meta(model_id)}
+    rt = runtime(model_id)
     if model_id in downloading:
         item["status"] = "downloading"
         if sizes.get(model_id):
-            item["progress"] = round(min(blobs_size(model_id) / sizes[model_id], 0.99), 3)
+            item["progress"] = round(min(blobs_size(rt.repo(model_id, downloading[model_id] or rt.cpu_ct)) / sizes[model_id], 0.99), 3)
     else:
-        item["status"] = "ready" if local_path(model_id) else "not_downloaded"
+        item["status"] = "ready" if local(model_id) else "not_downloaded"
         if model_id in errors and item["status"] == "not_downloaded":
             item["error"] = errors[model_id]
     if current.get("id") == model_id:  # 올라가 있으면 실제 배치를 보여 준다
         p = current["plan"]
     else:
-        g, ram = hw or (gpus(), ram_free_mb())
+        g, ram = hw if hw and rt is BACKEND else (gpus(rt), ram_free_mb())
         p = plan_for(model_id, g, ram, levels.get(model_id, 0))
     item.update(fits=p["fits"], device=p["device"], compute_type=p["compute_type"])
     if item["status"] == "ready":
@@ -218,14 +239,16 @@ def status_of(model_id: str, hw=None) -> dict:
     return item
 
 
-def fetch(model_id: str) -> None:
+def fetch(model_id: str, ct=None) -> None:
+    rt = runtime(model_id)
     try:
-        weights[model_id] = to_fp16_mb(model_id, (Path(download(model_id)) / weights_file(model_id)).stat().st_size)
+        p = download(model_id, ct)
+        weights[model_id] = rt.weights(file_sizes(p), model_id, ct or rt.cpu_ct)
     except Exception as e:
         errors[model_id] = f"{type(e).__name__}: {e}"[:300]
         return
     finally:
-        downloading.discard(model_id)
+        downloading.pop(model_id, None)
     warm(model_id)
 
 
@@ -238,7 +261,7 @@ def warm(model_id: str) -> None:
 
 
 def is_oom(e: Exception) -> bool:
-    return "out of memory" in str(e).lower() or isinstance(e, MemoryError)
+    return bool(OOM.search(str(e))) or isinstance(e, MemoryError)
 
 
 def unload() -> None:
@@ -247,26 +270,36 @@ def unload() -> None:
     current.clear()
 
 
+def restart() -> None:
+    """모델 해제가 위험한 실행부(ROCm)에서 다른 모델로 바꿀 때: 같은 명령으로 프로세스를 다시 띄운다.
+    connect 모드는 다시 뜬 뒤 첫 heartbeat(job_id 없음)에 core가 작업을 되돌려 다시 준다(IMPL-PLAN-11 §7.5)."""
+    log.warning("%s: 모델을 바꾸려고 프로세스를 다시 시작합니다(해제 시 멈춤 버그 회피).", BACKEND.name)
+    sys.stdout.flush()
+    os.execv(sys.executable, [sys.executable, "-m", "server", *sys.argv[1:]])
+
+
 def load(model_id: str) -> dict:
     """모델을 올린다. 올리다 OOM이면 정밀도를 낮춰(끝내 CPU로) 다시 시도한다."""
-    from faster_whisper import WhisperModel
+    rt = runtime(model_id)
     with load_lock:
         if current.get("id") == model_id:
             return current
+        if current and BACKEND.no_unload:
+            restart()
         unload()
         while True:
             weights.setdefault(model_id, 0)
-            p = plan_for(model_id, gpus(), ram_free_mb(), levels.get(model_id, 0))
+            p = plan_for(model_id, gpus(rt), ram_free_mb(), levels.get(model_id, 0))
             if not p["fits"]:
                 raise HTTPException(503, f"이 장비의 메모리로는 {model_id}를 올릴 수 없습니다(필요 약 {p.get('need_mb')}MB).")
             try:
-                path = local_path(model_id)
+                path = local_path(model_id, p["compute_type"] if cts_of(model_id) != [None] else None)
+                if not path:
+                    raise HTTPException(409, f"모델이 준비되지 않았습니다: {model_id}")
                 # GPU마다 모델 하나 + 전용 스레드 묶음. 한 스레드가 여러 GPU의 모델을 번갈아 부르면
                 # CTranslate2가 "CUDA failed with error invalid argument"로 실패한다(이 PC 실측).
-                kw = dict(compute_type=p["compute_type"], num_workers=p["workers"])
-                cls = Nemotron if model_id == NEMOTRON else WhisperModel
-                models = [cls(path, device="cuda", device_index=i, **kw) for i in p["gpus"]] or \
-                         [cls(path, device="cpu", **kw)]
+                models = [rt.open(path, i, p["compute_type"], p["workers"]) for i in p["gpus"]] or \
+                         [rt.open(path, None, p["compute_type"], p["workers"])]
                 workers = [[m, 0, ThreadPoolExecutor(p["workers"])] for m in models]
                 # 1초 무음으로 한 번 돌려 본다: CUDA 라이브러리 누락(cublas64_12.dll 등)과 첫 실행 지연을 여기서 치른다.
                 for w in workers:
@@ -280,8 +313,8 @@ def load(model_id: str) -> dict:
                 if p["device"] == "cpu" or isinstance(e, HTTPException):
                     raise
                 if not is_oom(e):
-                    # CUDA 라이브러리 문제만 GPU 고장으로 본다(의존성 누락 등은 그대로 실패시킨다).
-                    if not CPU_FALLBACK or not re.search(r"cuda|cublas|cudnn|nvrtc", str(e), re.I):
+                    # GPU 라이브러리 문제만 GPU 고장으로 본다(의존성 누락 등은 그대로 실패시킨다).
+                    if not CPU_FALLBACK or not re.search(rt.gpu_error, str(e), re.I):
                         raise
                     log.error("GPU를 쓸 수 없어 CPU로 바꿉니다: %s", e)
                     gpu_broken.append(str(e)[:200])
@@ -292,78 +325,32 @@ def load(model_id: str) -> dict:
                 levels[model_id] = levels.get(model_id, 0) + 1
 
 
-class Nemotron:
-    """모델 카드의 Transformers "Offline transcription" 예시를 faster-whisper WhisperModel과 같은 모양으로 감싼다.
-    prompt(용어집)를 넣을 자리가 없어 무시한다. VAD 없이 구간 전체를 한 번에 넣는다."""
-
-    def __init__(self, path, device, device_index=0, compute_type="float16", num_workers=1):
-        import torch
-        from transformers import AutoModelForRNNT, AutoProcessor
-        self.torch = torch
-        self.processor = AutoProcessor.from_pretrained(path)
-        dtype = torch.float16 if compute_type == "float16" else torch.float32
-        dev = f"cuda:{device_index}" if device == "cuda" else "cpu"
-        self.model = AutoModelForRNNT.from_pretrained(path, dtype=dtype).to(dev).eval()
-        # generate()가 호출마다 모델 객체에 상태를 써서 동시에 부르면 AttributeError가 난다(실측). GPU당 한 번에 하나.
-        self.lock = threading.Lock()
-
-    def transcribe(self, data, language=None, initial_prompt=None, vad_filter=True):
-        from types import SimpleNamespace
-
-        from faster_whisper.audio import decode_audio
-        sr = self.processor.feature_extractor.sampling_rate
-        audio = data if isinstance(data, numpy.ndarray) else decode_audio(data, sampling_rate=sr)
-        inputs = self.processor(audio, sampling_rate=sr, language=language or "auto")
-        inputs.to(self.model.device, dtype=self.model.dtype)
-        with self.lock, self.torch.inference_mode():
-            out = self.model.generate(**inputs, return_dict_in_generate=True)
-        text = self.processor.decode(out.sequences, skip_special_tokens=True)
-        text = " ".join((text[0] if isinstance(text, list) else text).split())
-        return [SimpleNamespace(text=text)], SimpleNamespace(duration=len(audio) / sr)
-
-
 def known(model_id: str) -> str:
     if model_id not in PRESETS:
         raise HTTPException(404, f"프리셋에 없는 모델입니다: {model_id}")
     return model_id
 
 
-@contextlib.asynccontextmanager
-async def lifespan(_app):
-    threading.Thread(target=fill_sizes, daemon=True).start()
-    g = gpus()
-    log.info("장비: GPU %s, RAM 여유 %dMB", [f"{x['index']}:{x['name']} {x['free_mb']}/{x['total_mb']}MB" for x in g] or "없음", ram_free_mb())
-    yield
-
-
-app = FastAPI(title="udally-stt", dependencies=[Depends(auth)], lifespan=lifespan)
-
-
-@app.get("/v1/models")
-def list_models():
+def models_data() -> list[dict]:
     hw = (gpus(), ram_free_mb())
-    return {"object": "list", "data": [status_of(m, hw) for m in PRESETS]}
+    return [status_of(m, hw) for m in PRESETS]
 
 
-@app.get("/v1/models/{model_id:path}")
-def get_one(model_id: str):
-    return status_of(known(model_id))
-
-
-@app.post("/v1/models/{model_id:path}")
-def start_download(model_id: str):
+def pull(model_id: str) -> tuple[int, dict]:
+    """[모델 적용]: 받지 않았으면 받기 시작, 받았으면 미리 올린다. (HTTP 상태, 항목) — HTTP와 connect 모드가 같이 쓴다."""
     with lock:
         item = status_of(known(model_id))
         if item["fits"] is False:  # 이 장비에서 못 도는 모델은 받지 않는다
-            return JSONResponse({**item, "detail": "이 장비의 메모리로는 이 모델을 돌릴 수 없습니다."}, status_code=409)
+            return 409, {**item, "detail": "이 장비의 메모리로는 이 모델을 돌릴 수 없습니다."}
         if item["status"] == "not_downloaded":
-            downloading.add(model_id)
+            ct = item["compute_type"] if cts_of(model_id) != [None] else None
+            downloading[model_id] = ct
             errors.pop(model_id, None)
-            threading.Thread(target=fetch, args=(model_id,), daemon=True).start()
+            threading.Thread(target=fetch, args=(model_id, ct), daemon=True).start()
             item = status_of(model_id)
         elif item["status"] == "ready" and current.get("id") != model_id:
             threading.Thread(target=warm, args=(model_id,), daemon=True).start()
-    return JSONResponse(item, status_code=200 if item["status"] == "ready" else 202)
+    return (200 if item["status"] == "ready" else 202), item
 
 
 def decode(w, model_id: str, data, language, prompt, cancel: threading.Event) -> str:
@@ -398,11 +385,45 @@ def run(model_id: str, data, language, prompt, cancel: threading.Event) -> str:
         log.error("전사 중 메모리 부족 %s %s → 다음 요청은 낮은 정밀도", model_id, cur["plan"]["device"])
         with load_lock:
             levels[model_id] = levels.get(model_id, 0) + 1
-            unload()
+            if not BACKEND.no_unload:
+                unload()
         raise HTTPException(503, "전사 중 메모리가 부족했습니다. 다음 요청은 낮은 정밀도로 처리합니다.") from e
     finally:
         with lock:
             w[1] -= 1
+
+
+def start() -> None:
+    """HTTP·connect 공통 기동: 크기 조회 스레드 + 장비 기록."""
+    threading.Thread(target=fill_sizes, daemon=True).start()
+    g = gpus()
+    log.info("실행부 %s%s, GPU %s, RAM 여유 %dMB", BACKEND.name, "(실험)" if BACKEND.experimental else "",
+             [f"{x['index']}:{x['name']} {x['free_mb']}/{x['total_mb']}MB" for x in g] or "없음", ram_free_mb())
+
+
+@contextlib.asynccontextmanager
+async def lifespan(_app):
+    start()
+    yield
+
+
+app = FastAPI(title="udally-stt", dependencies=[Depends(auth)], lifespan=lifespan)
+
+
+@app.get("/v1/models")
+def list_models():
+    return {"object": "list", "data": models_data()}
+
+
+@app.get("/v1/models/{model_id:path}")
+def get_one(model_id: str):
+    return status_of(known(model_id))
+
+
+@app.post("/v1/models/{model_id:path}")
+def start_download(model_id: str):
+    code, item = pull(model_id)
+    return JSONResponse(item, status_code=code)
 
 
 @app.post("/v1/audio/transcriptions")
@@ -438,7 +459,16 @@ async def transcribe(
     return PlainTextResponse(text) if response_format == "text" else {"text": text}
 
 
-if __name__ == "__main__":
+def cli(argv=None) -> None:
+    """udally-stt (HTTP 서버) · udally-stt connect [--until-linked] (유달리 연결) · udally-stt unlink (스스로 끊기)."""
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] in (["connect"], ["unlink"]):
+        import link
+        sys.exit(link.main(argv[1:] if argv[0] == "connect" else ["unlink"]))
     import uvicorn
-
     uvicorn.run(app, host=env("STT_HOST", "127.0.0.1"), port=int(env("STT_PORT", "8000")))
+
+
+if __name__ == "__main__":
+    sys.modules.setdefault("server", sys.modules[__name__])  # link.py가 `import server`로 같은 상태를 보게
+    cli()

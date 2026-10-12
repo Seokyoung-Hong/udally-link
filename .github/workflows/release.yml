@@ -1,0 +1,62 @@
+# 태그(v0.x.y)를 달면 공개 이미지(cpu·cuda·openvino·rocm)를 빌드·푸시하고, digest·커밋을 설치 스크립트 머리에 채워 릴리스에 올린다.
+# nemotron은 공개하지 않는다(NVSHMEM 재배포 근거 불명확, README 1절). 유달리 core의 STT_RELEASE는 이 릴리스 노트의 커밋을 가리킨다.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+  packages: write
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        variant: [cpu, cuda, openvino, rocm]
+    outputs:
+      cpu: ${{ steps.out.outputs.cpu }}
+      cuda: ${{ steps.out.outputs.cuda }}
+      openvino: ${{ steps.out.outputs.openvino }}
+      rocm: ${{ steps.out.outputs.rocm }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - uses: docker/setup-buildx-action@v3
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            VARIANT=${{ matrix.variant }}
+            REVISION=${{ github.sha }}
+          tags: ghcr.io/seokyoung-hong/udally-stt:${{ github.ref_name }}-${{ matrix.variant }}
+      - name: 이미지 안 검사(디코드 6형식·GPL 부재)
+        run: docker run --rm -v "$PWD/samples:/app/samples:ro" -v "$PWD/test_decode.py:/app/test_decode.py:ro" --entrypoint python ghcr.io/seokyoung-hong/udally-stt:${{ github.ref_name }}-${{ matrix.variant }} test_decode.py
+      - id: out
+        run: echo "${{ matrix.variant }}=${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+  scripts:
+    needs: images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 설치 스크립트에 릴리스 값 채우기
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          for f in scripts/install.sh scripts/install.ps1; do
+            sed -i -e "s|^VERSION=\".*\"|VERSION=\"$v\"|" -e "s|^COMMIT=\"\"|COMMIT=\"$GITHUB_SHA\"|" \
+              -e "s|^DIGEST_CPU=\"\"|DIGEST_CPU=\"${{ needs.images.outputs.cpu }}\"|" -e "s|^DIGEST_CUDA=\"\"|DIGEST_CUDA=\"${{ needs.images.outputs.cuda }}\"|" \
+              -e "s|^DIGEST_OPENVINO=\"\"|DIGEST_OPENVINO=\"${{ needs.images.outputs.openvino }}\"|" -e "s|^DIGEST_ROCM=\"\"|DIGEST_ROCM=\"${{ needs.images.outputs.rocm }}\"|" \
+              -e "s|^\$Version = '.*'|\$Version = '$v'|" -e "s|^\$Commit = ''|\$Commit = '$GITHUB_SHA'|" \
+              -e "s|cpu = ''; cuda = ''; openvino = ''|cpu = '${{ needs.images.outputs.cpu }}'; cuda = '${{ needs.images.outputs.cuda }}'; openvino = '${{ needs.images.outputs.openvino }}'|" "$f"
+          done
+          git config user.name github-actions && git config user.email github-actions@users.noreply.github.com
+          git checkout -b "release-$v" && git commit -am "release $v: 설치 스크립트 릴리스 값" && git push origin "release-$v"
+          echo "SCRIPTS_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - name: 릴리스 노트
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "코드 커밋: $GITHUB_SHA
+          설치 스크립트 커밋(core STT_RELEASE.commit): $SCRIPTS_COMMIT
+          digest: cpu ${{ needs.images.outputs.cpu }} · cuda ${{ needs.images.outputs.cuda }} · openvino ${{ needs.images.outputs.openvino }} · rocm ${{ needs.images.outputs.rocm }}"

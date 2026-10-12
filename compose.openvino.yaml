@@ -1,0 +1,13 @@
+# Intel GPU 변형(OpenVINO). Linux는 /dev/dri, Windows Docker Desktop(WSL2)은 /dev/dxg + /usr/lib/wsl을 씁니다.
+#   docker compose -f compose.yaml -f compose.openvino.yaml up -d --build
+# Windows Docker Desktop이면 devices를 "/dev/dxg"로, volumes에 "/usr/lib/wsl:/usr/lib/wsl"을 더합니다.
+services:
+  stt:
+    build:
+      args:
+        VARIANT: openvino
+    image: udally-stt:openvino
+    environment:
+      STT_DEVICE: openvino
+    devices:
+      - /dev/dri

@@ -1,0 +1,471 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+"""유달리에 내 PC를 전사 서버로 연결한다(IMPL-PLAN-11 §3·§4·§10). 들어오는 연결 없이 PC → 유달리로만 나간다.
+
+udally-stt connect [--until-linked]  기기 인증(주소+코드) → 5초마다 heartbeat → 배정된 작업을 받아 전사·결과 보고
+udally-stt unlink                    스스로 끊기(DELETE /self) + 토큰 파일 삭제
+의존성은 server.py와 같다(HTTP는 표준 urllib). 토큰은 로그에 앞 12자만 남긴다.
+"""
+
+import contextlib
+import json
+import logging
+import os
+import platform
+import random
+import shutil
+import sys
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import numpy
+
+import server
+
+env = os.environ.get
+URL = (env("UDALLY_URL") or "https://udally.sio2.kr").rstrip("/")
+API = "/api/integrations/stt"
+MIN_SEGMENT_MS = 1500  # Node transcribe.mjs MIN_SEGMENT_MS와 같다
+SR = 16000
+UPLOAD_USER = "upload"  # Node runRetry의 올린 녹음 화자 id와 같다
+WINDOW_S = 600  # 올린 녹음은 10분 창으로 디코드해 VAD
+REPORT_S = 5
+RESULT_RETRY_S = 600  # 결과 보고는 끊겨도 10분까지 다시 보낸다
+log = logging.getLogger("udally-stt.link")
+
+# 문구: IMPL-PLAN-11 §9.3 {{COPY:키}} 자리. 확정 문구는 Sol이 쓴다(여기는 임시 격식체).
+T = {
+    "connect_prompt": "브라우저에서 {uri} 를 열고 아래 코드를 입력해 주세요.\n\n    {code}\n\n코드는 {minutes}분 동안 유효합니다.",
+    "connect_waiting": "유달리에서 허용하기를 기다리는 중입니다…",
+    "connect_ok": "연결되었습니다: {name}. 이 창을 켜 두는 동안 유달리가 이 PC로 전사합니다.",
+    "link_denied": "연결이 거절되었습니다.",
+    "link_expired": "코드가 만료되어 새 코드를 받습니다.",
+    "pc_unlinked": "유달리에서 이 PC 연결이 끊겼습니다. 다시 연결하려면 다시 실행해 주세요.",
+    "pc_update_needed": "udally-stt를 새 버전으로 업데이트해야 합니다. 설치 명령을 다시 실행해 주세요.",
+    "unlinked_self": "연결을 끊었습니다.",
+    "not_linked": "연결된 적이 없습니다.",
+    "already_linked": "이미 유달리에 연결되어 있습니다.",
+}
+
+
+def say(key, **kw) -> None:
+    print(T[key].format(**kw), flush=True)
+
+
+# ---------- 토큰 파일 ----------
+def link_file() -> Path:
+    if env("STT_LINK_FILE"):
+        return Path(env("STT_LINK_FILE"))
+    if sys.platform == "win32":
+        return Path(env("APPDATA") or Path.home(), "udally-stt", "link.json")
+    return Path.home() / ".config" / "udally-stt" / "link.json"
+
+
+def load_link() -> dict | None:
+    try:
+        return json.loads(link_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def save_link(data: dict) -> None:
+    p = link_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # POSIX는 처음부터 0600
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    os.replace(tmp, p)
+
+
+def drop_link() -> None:
+    with contextlib.suppress(FileNotFoundError):
+        link_file().unlink()
+
+
+# ---------- HTTP ----------
+class Offline(Exception):
+    """네트워크 오류·5xx: 백오프로 다시 시도한다."""
+
+
+def call(method: str, path: str, body=None, token=None, url=None, timeout=30) -> tuple[int, dict]:
+    req = urllib.request.Request((url or URL) + API + path, method=method,
+                                 data=None if body is None else json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json", "User-Agent": f"udally-stt/{server.VERSION}",
+                                          **({"Authorization": f"Bearer {token}"} if token else {})})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        if e.code >= 500:
+            raise Offline(f"HTTP {e.code}") from e
+        try:
+            return e.code, json.loads(e.read() or b"{}")
+        except ValueError:
+            return e.code, {}
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise Offline(str(e)) from e
+
+
+def fetch_file(path: str, dest: Path, token: str, url=None) -> int:
+    """GET 스트림을 파일로(메모리에 올리지 않는다). 성공하면 200, 아니면 상태 코드."""
+    req = urllib.request.Request((url or URL) + API + path, headers={"Authorization": f"Bearer {token}",
+                                                                      "User-Agent": f"udally-stt/{server.VERSION}"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r, open(dest, "wb") as f:
+            shutil.copyfileobj(r, f, 1 << 20)
+            return 200
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def backoff(n: int) -> float:
+    """2·4·8…60초 + 지터."""
+    return min(60, 2 ** n) + random.uniform(0, 1)
+
+
+# ---------- 기기 정보 ----------
+def device_info() -> dict:
+    g = server.gpus()
+    return {"backend": server.BACKEND.name, "experimental": server.BACKEND.experimental,
+            "gpus": [{"name": x["name"], "total_mb": x["total_mb"]} for x in g], "ram_free_mb": server.ram_free_mb(),
+            "os": platform.system()}
+
+
+# ---------- 기기 인증 ----------
+def device_flow(machine_id: str, sleep=time.sleep, url=None) -> dict | None:
+    name = (env("STT_NAME") or platform.node() or "my-pc")[:50]
+    fails = 0
+    while True:
+        try:
+            st, r = call("POST", "/device", {"name": name, "machine_id": machine_id, "version": server.VERSION,
+                                             "device": device_info()}, url=url)
+        except Offline as e:
+            fails += 1
+            log.warning("유달리에 닿지 않습니다(%s). 다시 시도합니다.", e)
+            sleep(backoff(fails))
+            continue
+        if st == 426:
+            say("pc_update_needed")
+            return None
+        if st != 200:
+            raise SystemExit(f"기기 인증을 시작하지 못했습니다(HTTP {st}): {r.get('detail', '')}")
+        say("connect_prompt", uri=r["verification_uri"], code=r["user_code"], minutes=max(1, r.get("expires_in", 600) // 60))
+        say("connect_waiting")
+        deadline = time.monotonic() + r.get("expires_in", 600)
+        while time.monotonic() < deadline:
+            sleep(r.get("interval", 5))
+            try:
+                st, t = call("POST", "/device/token", {"device_code": r["device_code"]}, url=url)
+            except Offline:
+                continue
+            if st == 200:
+                link = {"url": url or URL, "server_id": t["server_id"], "machine_id": machine_id, "token": t["access_token"]}
+                save_link(link)
+                say("connect_ok", name=t.get("name", name))
+                log.info("토큰 %s… 저장 %s", t["access_token"][:12], link_file())
+                return link
+            err = t.get("error")
+            if err == "access_denied":
+                say("link_denied")
+                return None
+            if err == "expired_token":
+                break
+        say("link_expired")
+
+
+# ---------- 오디오 ----------
+def pcm(path):
+    """파일을 16kHz mono float32 조각으로 흘려 디코드한다(faster_whisper.audio.decode_audio와 같은 PyAV 설정)."""
+    import av
+    with av.open(str(path), mode="r", metadata_errors="ignore") as c:
+        rs = av.audio.resampler.AudioResampler(format="s16", layout="mono", rate=SR)
+        for frame in c.decode(audio=0):
+            frame.pts = None
+            for f in rs.resample(frame):
+                yield f.to_ndarray().reshape(-1).astype(numpy.float32) / 32768.0
+        for f in rs.resample(None):
+            yield f.to_ndarray().reshape(-1).astype(numpy.float32) / 32768.0
+
+
+def slices(chunks, segs):
+    """segs(start_ms 순)에 걸린 샘플만 남겨 (구간, 오디오)를 끝나는 대로 내보낸다. 트랙 전체를 메모리에 올리지 않는다."""
+    segs = sorted(segs, key=lambda g: g["start_ms"])
+    spans = [(g, g["start_ms"] * SR // 1000, (g["start_ms"] + g["duration_ms"]) * SR // 1000) for g in segs]
+    bufs: dict[int, list] = {}
+    nxt, pos = 0, 0
+    for c in chunks:
+        end = pos + len(c)
+        while nxt < len(spans) and spans[nxt][1] < end:  # 이 조각에서 시작하는 구간
+            bufs[nxt] = []
+            nxt += 1
+        for i in sorted(bufs):
+            g, a, b = spans[i]
+            if b > pos:
+                bufs[i].append(c[max(a - pos, 0):min(b - pos, len(c))])
+            if b <= end:
+                yield g, numpy.concatenate(bufs.pop(i)) if bufs[i] else numpy.zeros(0, numpy.float32)
+        pos = end
+    for i in list(range(nxt, len(spans))) + sorted(bufs):  # 파일이 구간보다 짧으면 있는 만큼(없으면 빈 오디오)
+        part = bufs.pop(i, [])
+        yield spans[i][0], numpy.concatenate(part) if part else numpy.zeros(0, numpy.float32)
+
+
+def speech(chunks, vad=None):
+    """올린 녹음: 10분 창마다 faster-whisper VAD로 말한 구간(30초 이하)을 찾아 (구간, 오디오)를 내보낸다."""
+    if vad is None:
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+        def vad(a):
+            return get_speech_timestamps(a, VadOptions(max_speech_duration_s=30, min_silence_duration_ms=600))
+    win, buf, off = WINDOW_S * SR, [], 0
+
+    def flush(a):
+        for s in vad(a):
+            yield {"start_ms": (off + s["start"]) * 1000 // SR, "duration_ms": (s["end"] - s["start"]) * 1000 // SR}, a[s["start"]:s["end"]]
+
+    n = 0
+    for c in chunks:
+        buf.append(c)
+        n += len(c)
+        if n >= win:
+            a = numpy.concatenate(buf)
+            yield from flush(a[:win])
+            buf, n, off = [a[win:]], len(a) - win, off + win
+    if n:
+        yield from flush(numpy.concatenate(buf))
+
+
+# ---------- 작업 ----------
+class Job:
+    def __init__(self, job: dict, token: str, url=None, run=None):
+        self.job, self.token, self.url = job, token, url
+        self.run = run or server.run
+        self.cancel = threading.Event()
+        self.gone = False  # core가 이 작업을 더는 내 것으로 보지 않음(404/409) → 결과를 버린다
+        self.lock = threading.Lock()
+        self.p = {"audio_ms": 0, "done_ms": 0, "segments_total": 0, "segments_done": 0, "segments_failed": 0}
+        self.rows: list[dict] = []
+
+    def patch(self, body) -> tuple[int, dict]:
+        return call("PATCH", f"/jobs/{self.job['id']}", body, token=self.token, url=self.url)
+
+    def report(self) -> None:
+        """진행 PATCH. 응답 cancel이면 끊는다. 실패해도 전사는 계속한다."""
+        try:
+            with self.lock:
+                body = dict(self.p)
+            st, r = self.patch(body)
+        except Offline:
+            return
+        if st in (404, 409):
+            self.gone = True
+            self.cancel.set()
+        elif r.get("cancel"):
+            self.cancel.set()
+
+    def segments(self, tmp: Path):
+        """(seq, user_id, 구간, 오디오)를 차례로 낸다."""
+        j = self.job
+        if j.get("source") == "upload":
+            f = tmp / "upload.audio"
+            self.download("/audio", f)
+            seq = 0
+            for g, a in speech(pcm(f)):
+                if g["duration_ms"] < MIN_SEGMENT_MS:
+                    continue
+                seq += 1
+                with self.lock:
+                    self.p["segments_total"] += 1
+                    self.p["audio_ms"] = g["start_ms"] + g["duration_ms"]
+                yield seq, UPLOAD_USER, g, a
+            return
+        todo = [g for g in j.get("segments", []) if g["duration_ms"] >= MIN_SEGMENT_MS]
+        with self.lock:
+            self.p["segments_total"] = len(todo)
+            self.p["audio_ms"] = sum(g["duration_ms"] for g in todo)
+        for uid in dict.fromkeys(str(g["user_id"]) for g in todo):
+            f = tmp / f"track-{uid}.ogg"
+            self.download(f"/tracks/{uid}", f)
+            for g, a in slices(pcm(f), [g for g in todo if str(g["user_id"]) == uid]):
+                yield g["seq"], uid, g, a
+            f.unlink(missing_ok=True)
+
+    def download(self, sub: str, dest: Path) -> None:
+        st = fetch_file(f"/jobs/{self.job['id']}{sub}", dest, self.token, url=self.url)
+        if st == 404:
+            self.gone = True
+            raise LookupError("not_mine")
+        if st != 200:
+            raise LookupError("audio_unavailable")
+
+    def one(self, seq, uid, g, a) -> None:
+        row = {"seq": seq, "user_id": uid, "start_ms": g["start_ms"]}
+        try:
+            text = "" if self.cancel.is_set() or not len(a) else \
+                self.run(self.job["model"], a, self.job.get("language") or "ko", self.job.get("glossary") or None, self.cancel)
+            row["text"] = text
+        except Exception as e:  # 메모리 부족(503) 등: 이 구간만 실패로 남기고 다음 구간으로
+            log.warning("구간 %s 전사 실패: %s", seq, getattr(e, "detail", e))
+            row["failed"] = True
+        with self.lock:
+            self.rows.append(row)
+            self.p["segments_failed" if row.get("failed") else "segments_done"] += 1
+            self.p["done_ms"] += g["duration_ms"]
+
+    def finish(self, body: dict, sleep=time.sleep) -> None:
+        """마지막 보고는 백오프로 최대 10분 다시 보낸다. 그사이 넘겨졌으면(404/409) 버린다."""
+        until, n = time.monotonic() + RESULT_RETRY_S, 0
+        while True:
+            try:
+                st, _ = self.patch(body)
+                if st == 413:
+                    self.patch({**body, "status": "failed", "rows": None, "error": "transcript_too_large"})
+                return
+            except Offline:
+                n += 1
+                if time.monotonic() > until:
+                    log.error("결과 보고를 포기합니다(작업 %s)", self.job["id"])
+                    return
+                sleep(backoff(n))
+
+    def go(self, sleep=time.sleep) -> str:
+        j, started = self.job, time.monotonic()
+        if j.get("model") not in server.PRESETS or server.status_of(j["model"])["status"] != "ready":
+            self.finish({**self.p, "status": "failed", "error": "model_not_ready"}, sleep)
+            return "failed"
+        tmp = Path(tempfile.mkdtemp(prefix="udally-stt-"))
+        stop = threading.Event()
+
+        def reporter():
+            while not stop.wait(REPORT_S):
+                self.report()
+
+        rt = threading.Thread(target=reporter, daemon=True)
+        rt.start()
+        error = None
+        try:
+            limit = threading.BoundedSemaphore(server.CONCURRENCY * 2)  # 디코드가 전사보다 너무 앞서가지 않게(메모리)
+            with ThreadPoolExecutor(server.CONCURRENCY) as pool:
+                for item in self.segments(tmp):
+                    if self.cancel.is_set():
+                        break
+                    limit.acquire()
+                    pool.submit(self.one, *item).add_done_callback(lambda _f: limit.release())
+        except LookupError as e:
+            error = str(e)
+        except Exception as e:
+            log.exception("작업 %s 실패", j["id"])
+            error = "decode_failed" if "av" in type(e).__module__ else "pc_error"
+        finally:
+            stop.set()
+            shutil.rmtree(tmp, ignore_errors=True)
+        if self.gone:
+            return "gone"
+        if self.cancel.is_set():
+            status, body = "cancelled", {}
+        elif error:
+            status, body = "failed", {"error": error}
+        else:
+            plan = (server.current.get("plan") or {}) if server.current.get("id") == j["model"] else {}
+            status, body = "done", {"rows": sorted(self.rows, key=lambda r: r["seq"]),
+                                    "stats": {"device": plan.get("device"), "compute_type": plan.get("compute_type"),
+                                              "elapsed_ms": round((time.monotonic() - started) * 1000)}}
+        self.finish({**self.p, "status": status, **body}, sleep)
+        return status
+
+
+# ---------- 연결 루프 ----------
+class Agent:
+    def __init__(self, link: dict, sleep=time.sleep, run=None):
+        self.link, self.sleep, self.run = link, sleep, run
+        self.job: Job | None = None
+        self.fails, self.wait = 0, 5.0
+
+    def beat(self) -> dict:
+        return {"version": server.VERSION, "job_id": self.job.job["id"] if self.job else None,
+                "concurrency": server.CONCURRENCY, "device": device_info(), "models": server.models_data()}
+
+    def handle(self, r: dict) -> None:
+        if r.get("pull"):
+            try:
+                server.pull(r["pull"])
+            except Exception as e:
+                log.warning("모델 받기 시작 실패 %s: %s", r["pull"], getattr(e, "detail", e))
+        if r.get("job") and self.job is None:  # PC 하나는 작업을 한 번에 하나만
+            self.job = Job(r["job"], self.link["token"], url=self.link.get("url"), run=self.run)
+            threading.Thread(target=self._work, args=(self.job,), daemon=True).start()
+
+    def _work(self, job: Job) -> None:
+        try:
+            log.info("작업 %s 끝: %s", job.job["id"], job.go(self.sleep))
+        finally:
+            self.job = None
+
+    def once(self) -> int | None:
+        """heartbeat 한 번. 끝내야 하면 종료 코드, 아니면 None. 다음 대기 시간은 self.wait."""
+        try:
+            st, r = call("POST", "/heartbeat", self.beat(), token=self.link["token"], url=self.link.get("url"))
+        except Offline as e:
+            self.fails += 1
+            self.wait = backoff(self.fails)
+            log.warning("유달리에 닿지 않습니다(%s). %.0f초 뒤 다시 시도합니다.", e, self.wait)
+            return None
+        self.fails, self.wait = 0, float(r.get("poll_s", 5)) if st == 200 else 5.0
+        if st == 200:
+            if env("STT_ALIVE_FILE"):  # Docker HEALTHCHECK가 본다
+                Path(env("STT_ALIVE_FILE")).touch()
+            self.handle(r)
+        elif st == 401:
+            drop_link()
+            say("pc_unlinked")
+            return 3
+        elif st == 426:
+            say("pc_update_needed")
+            return 4
+        else:
+            log.warning("heartbeat 거절 HTTP %s: %s", st, r.get("detail"))
+        return None
+
+    def loop(self) -> int:
+        while True:
+            code = self.once()
+            if code is not None:
+                if self.job:
+                    self.job.cancel.set()
+                return code
+            self.sleep(self.wait)
+
+
+def unlink_self() -> int:
+    link = load_link()
+    if not link:
+        say("not_linked")
+        return 0
+    with contextlib.suppress(Offline):
+        call("DELETE", "/self", token=link["token"], url=link.get("url"))
+    drop_link()
+    say("unlinked_self")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if argv[:1] == ["unlink"]:
+        return unlink_self()
+    link = load_link()
+    if not link or not link.get("token") or link.get("url") != URL:
+        link = device_flow((link or {}).get("machine_id") or str(uuid.uuid4()))
+        if not link:
+            return 1
+    elif "--until-linked" in argv:
+        say("already_linked")
+    if "--until-linked" in argv:
+        return 0
+    server.start()
+    log.info("유달리 %s에 연결됨(서버 %s, 토큰 %s…)", link["url"], link["server_id"], link["token"][:12])
+    return Agent(link).loop()

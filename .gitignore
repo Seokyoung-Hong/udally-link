@@ -1,2 +1,5 @@
 .env
 __pycache__/
+# 사람 목소리·TTS 음성 표본은 저장소에 두지 않는다(합성 톤만)
+samples/*
+!samples/tone*

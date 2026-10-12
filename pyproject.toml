@@ -1,0 +1,34 @@
+[project]
+name = "udally-stt"
+version = "0.1.0"
+description = "유달리용 로컬 전사 서버(OpenAI 호환 + 유달리 연결)"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10,<3.13"
+# server.py 머리(PEP 723)와 같은 목록이어야 한다(test_plan.py가 검사).
+dependencies = [
+  "faster-whisper>=1.1,<2",
+  "av<17",
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
+  "python-multipart>=0.0.9",
+  "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+# NVIDIA: CUDA 12 cuBLAS·cuDNN 9(Dockerfile cuda와 같은 목록)
+cuda = ["nvidia-cublas-cu12", "nvidia-cudnn-cu12==9.*"]
+# Intel: OpenVINO GenAI(GPU·CPU)
+openvino = ["openvino-genai>=2026.4,<2027"]
+# NVIDIA Nemotron(Docker 전용). torch는 cu128 색인에서 먼저 넣는다(PyPI 기본 torch는 cu130).
+nemotron = ["torch==2.11.0", "transformers>=5.13", "librosa"]
+
+[project.scripts]
+udally-stt = "server:cli"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["server", "link", "backends"]

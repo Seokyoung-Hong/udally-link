@@ -4,7 +4,7 @@ services:
   stt:
     build:
       args:
-        GPU: "1"
+        VARIANT: cuda
     image: udally-stt:cuda
     environment:
       STT_DEVICE: cuda

@@ -1,0 +1,16 @@
+# AMD GPU 변형(Linux, 실험). ROCm 런타임은 이미지에 없고 첫 실행 때 /cache에 AMD 공식 색인에서 받습니다(수백 MB).
+#   docker compose -f compose.yaml -f compose.rocm.yaml up -d --build
+services:
+  stt:
+    build:
+      args:
+        VARIANT: rocm
+    image: udally-stt:rocm
+    environment:
+      STT_DEVICE: rocm
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - render

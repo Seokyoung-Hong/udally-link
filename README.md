@@ -1,11 +1,52 @@
 # udally-stt
 
-유달리(Discord 회의 녹음)가 부르는 **로컬 음성 전사 서버**입니다. 조직이 자기 PC·서버에 띄우면 회의 음성이 외부로 나가지 않습니다.
-OpenAI 호환 `POST /v1/audio/transcriptions`에 더해, 유달리 설정 화면이 쓰는 **모델 목록·받기·장비 적합 정보**를 제공합니다.
+유달리(Discord 회의 녹음)가 쓰는 **로컬 음성 전사 서버**입니다. 회의 음성을 내 PC·조직 서버에서 전사하므로 외부 전사 서비스로 보내지 않습니다.
 
-- 전사 엔진: [faster-whisper](https://github.com/SYSTRAN/faster-whisper)(CTranslate2, MIT). 디코딩·VAD·정밀도·GPU 병렬은 이 라이브러리를 그대로 씁니다.
-- 모델 받기·캐시: [huggingface_hub](https://github.com/huggingface/huggingface_hub).
-- 이 저장소가 직접 짠 것: `server.py` 하나(HTTP 규약, 모델 상태·받기, 장비 감지·메모리 계획, OOM 강등, 취소, 속도 집계).
+- **내 PC 연결(기본)**: 명령 한 줄로 설치하면 기기 인증(주소+코드)으로 유달리 계정에 묶이고, PC가 켜져 있는 동안 유달리가 이 PC로 전사합니다. PC → 유달리로 나가는 연결만 쓰므로 포트포워딩이 필요 없습니다(0절).
+- **서버 주소 직접 입력(고급)**: OpenAI 호환 `POST /v1/audio/transcriptions`와 모델 목록·받기·장비 적합 정보를 HTTP로 엽니다(1절~).
+- 전사 엔진: [faster-whisper](https://github.com/SYSTRAN/faster-whisper)(CTranslate2, MIT) — NVIDIA CUDA·AMD ROCm(실험)·CPU. Intel GPU는 [OpenVINO GenAI](https://github.com/openvinotoolkit/openvino.genai)(Apache-2.0), NVIDIA Nemotron은 Transformers. 장치별 실행부는 `backends.py` 한 곳에 모았습니다.
+- 이 저장소가 직접 짠 것: `server.py`(HTTP 규약, 모델 상태·받기, 메모리 계획, OOM 강등, 취소), `link.py`(유달리 연결), `backends.py`(장치별 실행부), `scripts/`(설치·제거).
+- **라이선스: PolyForm Noncommercial 1.0.0(비상업, 소스 공개)** — 10절. 의존성·NVIDIA 구성요소·모델은 각자 라이선스입니다.
+
+## 0. 내 PC를 유달리 전사 서버로 연결하기
+
+| OS | 설치·업데이트(같은 명령) | 제거 |
+|---|---|---|
+| Windows (PowerShell 5.1·7) | `irm https://udally.sio2.kr/stt/install.ps1 \| iex` | `irm https://udally.sio2.kr/stt/uninstall.ps1 \| iex` |
+| macOS · Linux | `curl -fsSL https://udally.sio2.kr/stt/install.sh \| sh` | `curl -fsSL https://udally.sio2.kr/stt/uninstall.sh \| sh` |
+
+- 실행 전에 내용을 보고 싶으면 위 주소를 브라우저로 여세요(유달리가 이 저장소의 고정 커밋 `scripts/` 원본으로 보냅니다).
+- 스크립트는 관리자 권한(sudo·UAC)을 요구하지 않고, 사람 입력을 받지 않으며, 토큰을 출력하지 않습니다.
+- 화면에 나온 주소(`https://udally.sio2.kr/link`)를 직접 열고 **PC 화면의 코드를 손으로 입력**한 뒤 [허용]합니다. 코드가 든 링크를 남에게 받았다면 누르지 마세요.
+- **Docker가 있으면** GHCR 이미지(digest 고정)를 받아 `udally-stt` 컨테이너(`--restart unless-stopped`, 볼륨 `udally-stt:/cache`)로 띄웁니다. 토큰은 볼륨에 남으므로 다시 실행 = 업데이트이고 다시 연결하지 않습니다.
+- **Docker가 없으면(또는 AMD GPU면)** [uv](https://docs.astral.sh/uv/)(버전 고정)로 사용자 영역에 설치하고 로그인 때 자동으로 켭니다(Windows 시작프로그램, Linux `systemd --user`, macOS LaunchAgent).
+- GPU 판별: NVIDIA > AMD > Intel > CPU(Windows `Win32_VideoController` VEN_10DE/1002/8086, Linux `nvidia-smi`·`/dev/kfd`·`/sys/class/drm/*/device/vendor`). 판별·준비가 실패하면 CPU로 내립니다.
+
+| GPU | Docker | uv |
+|---|---|---|
+| NVIDIA | 이미지 `-cuda` + `--gpus all` | `udally-stt[cuda]`(cuBLAS·cuDNN 휠) |
+| AMD (**실험**) | Linux만 `-rocm` + `/dev/kfd`·`/dev/dri`. Windows Docker에는 ROCm 경로가 없어 uv | CTranslate2 ROCm 휠(OpenNMT 공식 릴리스 v4.8.2, sha256 고정) + AMD 공식 색인의 ROCm 런타임 |
+| Intel | 이미지 `-openvino` + Linux `/dev/dri`, Windows Docker Desktop `--device /dev/dxg -v /usr/lib/wsl:/usr/lib/wsl` | `udally-stt[openvino]` |
+| 없음 / macOS | 이미지 `-cpu` | 기본 |
+
+직접 명령(고급, `<버전>`·`<커밋>`은 릴리스 노트 참고):
+
+```bash
+# uv
+uv tool install --force --python 3.12 "udally-stt[cuda] @ git+https://github.com/Seokyoung-Hong/udally-stt@<커밋>"
+udally-stt connect            # 연결 후 계속 실행(Ctrl+C로 끔). --until-linked: 연결만 하고 끝냄
+udally-stt unlink             # 스스로 끊기(토큰 폐기)
+# Docker
+docker run -d --name udally-stt --restart unless-stopped -v udally-stt:/cache ghcr.io/seokyoung-hong/udally-stt:<버전>-cpu connect
+docker logs -f udally-stt     # 기기 인증 주소·코드
+# compose
+docker compose -f compose.yaml -f compose.link.yaml up -d   # GPU면 compose.cuda.yaml 등을 함께
+```
+
+- 유달리 주소는 `UDALLY_URL`(기본 `https://udally.sio2.kr`). 토큰 파일은 `STT_LINK_FILE`(Docker `/cache/udally-link.json`, Windows `%APPDATA%\udally-stt\link.json`, 그 밖 `~/.config/udally-stt/link.json`, POSIX 0600). 로그에는 토큰 앞 12자만 남깁니다.
+- 동작: 5초마다 heartbeat로 모델 목록을 보내고 [모델 적용]·작업을 받습니다. 작업은 트랙·녹음을 내려받아 PC 안에서 구간을 잘라 전사하고 구간별 결과만 올립니다(이름 목록은 받지 않음). 받은 오디오는 작업이 끝나면 지웁니다.
+- 끊김: 네트워크 오류·5xx는 2·4·8…60초 백오프, 401(유달리에서 끊음)은 토큰 파일을 지우고 종료 코드 3, 426(업데이트 필요)은 4.
+- 연결 모드는 포트를 열지 않습니다. Docker HEALTHCHECK는 마지막 heartbeat 성공 시각(2분 안)으로 봅니다.
 
 ## 1. 띄우기
 
@@ -15,12 +56,16 @@ OpenAI 호환 `POST /v1/audio/transcriptions`에 더해, 유달리 설정 화면
 cp .env.example .env          # STT_API_KEY 등 값 고치기
 docker compose up -d --build                                   # CPU
 docker compose -f compose.yaml -f compose.cuda.yaml up -d --build   # NVIDIA GPU
-docker compose -f compose.yaml -f compose.cuda.yaml -f compose.nemotron.yaml up -d --build   # GPU + NVIDIA Nemotron
+docker compose -f compose.yaml -f compose.openvino.yaml up -d --build   # Intel GPU(Linux)
+docker compose -f compose.yaml -f compose.rocm.yaml up -d --build   # AMD GPU(Linux, 실험)
+docker compose -f compose.yaml -f compose.cuda.yaml -f compose.nemotron.yaml up -d --build   # GPU + NVIDIA Nemotron(로컬 빌드 전용)
 ```
 
-- 이미지 크기(이 PC 실측): CPU 824MB, CUDA 4.6GB(cuBLAS·cuDNN 포함), Nemotron 12.4GB(PyTorch 2.14.1+cu130·Transformers 5.19·librosa 추가). 기반은 `python:3.12-slim`입니다.
-- Nemotron 프리셋은 PyTorch와 Transformers가 있을 때만 목록에 나타납니다. 기본 CPU·CUDA 이미지에서는 보이지 않습니다.
-- GPU는 NVIDIA 드라이버와 NVIDIA Container Toolkit(Windows는 Docker Desktop WSL2)이 필요합니다.
+- 변형은 Dockerfile `VARIANT`(cpu · cuda · nemotron · openvino · rocm) 하나로 고릅니다. 기반은 `python:3.12-slim`입니다.
+- 이미지 크기(이 PC 실측, 2026-10-13): cpu 650MB(이전 PyPI PyAV 824MB) · cuda 4.4GB(이전 4.6GB) · openvino 0.9GB · rocm 0.9GB(ROCm 런타임 제외, 첫 실행 때 받음) · nemotron 11.2GB(이전 12.4GB, torch 2.11.0+cu128·triton 제거).
+- PyAV는 PyPI 휠 대신 **GPL 부품 없는 디코드 전용 FFmpeg 8.0.3(LGPL-2.1+)**로 소스 빌드합니다(10절). 이 FFmpeg는 유달리 업로드 형식(mp3·m4a·wav·ogg·opus·webm)과 Discord 트랙(ogg/opus)의 오디오 디코더만 담습니다. `test_decode.py`가 이미지 안에서 6형식과 영상이 섞인 webm·m4a 디코드, libx264·libx265 부재를 확인합니다.
+- Nemotron 프리셋은 PyTorch와 Transformers가 있을 때만 목록에 나타납니다. **nemotron 이미지는 공개 배포하지 않습니다(로컬 빌드 전용)**: torch가 링크하는 NVIDIA NVSHMEM의 재배포 근거가 불명확해서입니다. torch는 `2.11.0+cu128`로 고정합니다(전에는 PyPI와 섞어 고르다 PyPI의 cu130 빌드가 들어왔습니다).
+- NVIDIA GPU는 NVIDIA 드라이버와 NVIDIA Container Toolkit(Windows는 Docker Desktop WSL2)이 필요합니다.
 - 받은 모델과 CUDA 첫 실행 캐시는 `models` 볼륨(`/cache`)에 남습니다. 컨테이너를 지워도 다시 받지 않습니다.
 - **기동할 때 모델을 받지 않습니다.** 유달리 설정 화면의 [적용]이 받기를 시작합니다(4절).
 
@@ -30,7 +75,8 @@ docker compose -f compose.yaml -f compose.cuda.yaml -f compose.nemotron.yaml up 
 STT_API_KEY=... STT_HOST=0.0.0.0 STT_PORT=8000 uv run server.py
 ```
 
-- 의존성은 `server.py` 머리(PEP 723)에 있어 uv가 알아서 설치합니다. 모델 캐시는 `HF_HOME`(기본 `~/.cache/huggingface`)입니다.
+- 의존성은 `server.py` 머리(PEP 723)와 `pyproject.toml`(같은 목록, `test_plan.py`가 검사)에 있어 uv가 알아서 설치합니다. 모델 캐시는 `HF_HOME`(기본 `~/.cache/huggingface`)입니다.
+- uv(네이티브) 경로에서는 사용자 PC가 PyPI의 PyAV 휠을 직접 받습니다. 이 휠의 FFmpeg는 libx264·libx265(GPL, 인코더 전용 — 전사에는 쓰지 않음)를 링크합니다. 이 저장소는 그 바이너리를 배포하지 않으며, 사용자 PC에서 사용자가 직접 설치·조합하는 것입니다. 우리가 배포하는 바이너리(이미지)에는 GPL 바이너리를 넣지 않습니다.
 - uv 실행에서 GPU를 쓰려면 CUDA 12용 cuBLAS와 cuDNN 9가 시스템에 있어야 합니다([faster-whisper 요구사항](https://github.com/SYSTRAN/faster-whisper#gpu)).
   없으면 첫 적재에서 실패를 감지하고 CPU로 바꿉니다(이 PC에서 `cublas64_12.dll` 없음 → CPU int8 전환 확인).
 
@@ -40,12 +86,16 @@ STT_API_KEY=... STT_HOST=0.0.0.0 STT_PORT=8000 uv run server.py
 |---|---|---|
 | `STT_API_KEY` | (없음) | 정하면 모든 경로에 `Authorization: Bearer <키>`가 필요합니다. 비우면 무인증입니다. |
 | `STT_MODELS` | 아래 프리셋 5개(Nemotron은 해당 이미지에서만) | `/v1/models`에 보일 모델 ID(쉼표 구분). 여기에 없는 ID는 404입니다. |
-| `STT_DEVICE` | `auto` | `auto`(GPU가 있으면 GPU) · `cuda` · `cpu` |
-| `STT_GPUS` | 전부 | 쓸 GPU 번호(nvidia-smi 번호). 예 `0,1`. `CUDA_VISIBLE_DEVICES`와 함께 쓰지 마세요(번호가 어긋납니다). |
+| `STT_DEVICE` | `auto` | `auto`(NVIDIA > AMD > Intel > CPU) · `cuda` · `rocm` · `openvino` · `cpu` |
+| `STT_GPUS` | 전부 | 쓸 GPU 번호(nvidia-smi·HIP·OpenVINO `GPU.n` 번호). 예 `0,1`. `CUDA_VISIBLE_DEVICES`와 함께 쓰지 마세요(번호가 어긋납니다). |
 | `STT_CPU_FALLBACK` | `1` | GPU 메모리가 모자라거나 GPU를 쓸 수 없을 때 CPU로 내립니다. `0`이면 거절합니다. |
 | `STT_COMPUTE_TYPE` | 자동 | 정하면 정밀도를 고정합니다(자동 강등 안 함). |
 | `STT_CONCURRENCY` | `3` | 동시 처리 수. 유달리는 3요청을 동시에 보냅니다. |
 | `STT_HOST` / `STT_PORT` | `127.0.0.1` / `8000` | uv 실행 때 여는 주소. Docker는 `STT_BIND` / `STT_PORT`(호스트 쪽)를 씁니다. |
+| `UDALLY_URL` | `https://udally.sio2.kr` | 연결 모드가 부를 유달리 주소 |
+| `STT_LINK_FILE` | 0절 | 연결 토큰 파일 위치 |
+| `STT_NAME` | 컴퓨터 이름 | 연결할 때 보낼 기기 이름(50자, 유달리 확인 화면에서 고칠 수 있음) |
+| `STT_ROCM_VERSION` | `7.13.0` | AMD(Linux) ROCm 런타임 버전. rocm 이미지는 첫 실행 때 `/cache/rocm-<버전>`에 AMD 공식 색인(`repo.amd.com/rocm/whl/<GPU 계열>/`)에서 받습니다. |
 
 ## 2. 모델 프리셋
 
@@ -57,9 +107,9 @@ STT_API_KEY=... STT_HOST=0.0.0.0 STT_PORT=8000 uv run server.py
 | `Systran/faster-whisper-large-v3` | OpenAI Whisper large-v3 | 3.09GB | 6GB 이상 GPU(최고 품질) | 4.4GB / 2.6GB / 3.1GB | 1배(기준)¹ |
 | `nvidia/nemotron-3.5-asr-streaming-0.6b` | NVIDIA Nemotron 3.5 ASR 0.6B | 2.55GB(float32) | NVIDIA GPU, **`udally-stt:nemotron` 이미지에서만 보임** | 2.1GB(GPU당, 실측 약 1.4GB) / (없음) / CPU float32 3.9GB | 이 PC GPU 2장(float16)에서 6.3초 음성 단건 0.4~0.7초, 3동시 0.7~1.0초(rtf 0.16~0.23). 첫 적재 약 14초 |
 
-### 라이선스(상업적 사용)
+### 모델 라이선스
 
-모두 상업적 사용이 가능한 것만 프리셋에 넣었습니다(2026-10-12 확인). 배포할 때는 각 라이선스 고지를 함께 둡니다.
+모델 가중치는 이 저장소·이미지에 들어 있지 않고, 사용자가 [모델 적용]으로 Hugging Face에서 직접 받습니다. 각 모델의 원 라이선스를 따릅니다(2026-10-12 확인, 모두 상업 사용 가능 — 이 저장소 코드의 비상업 라이선스와 별개).
 
 | 모델 ID | 가중치(원본) | 변환본 | 상업 사용 |
 |---|---|---|---|
@@ -70,14 +120,15 @@ STT_API_KEY=... STT_HOST=0.0.0.0 STT_PORT=8000 uv run server.py
 | `nvidia/nemotron-3.5-asr-streaming-0.6b` | [OpenMDW-1.1](https://openmdw.ai/license/1-1/) — "deal in the Model Materials without restriction", 배포 시 라이선스 사본·고지 유지, 특허 소송 시 종료. 출력물에는 제한 없음 | (원본 그대로 사용) | 가능 |
 
 - 원본 Whisper는 GitHub(MIT)과 HF(Apache-2.0) 표기가 다르지만 둘 다 상업 사용을 허용합니다.
-- 실행 라이브러리: faster-whisper·CTranslate2 MIT, PyTorch BSD-3, Transformers Apache-2.0.
+- 실행 라이브러리: faster-whisper·CTranslate2 MIT, PyTorch BSD-3, Transformers Apache-2.0, OpenVINO Apache-2.0.
+- `deepdml/faster-whisper-large-v3-turbo-ct2`는 원본 `openai/whisper-large-v3-turbo`(MIT)의 변환본입니다. Intel용 OpenVINO 공식 변환본은 `OpenVINO/whisper-{small,medium,large-v3}-*-ov` Apache-2.0, `OpenVINO/whisper-large-v3-turbo-*-ov` MIT입니다(HF API).
 
 - ¹ [openai/whisper README "Available models"](https://github.com/openai/whisper#available-models-and-languages)의 상대 속도(원본 PyTorch 기준. 같은 표의 VRAM 1~10GB는 PyTorch fp32 수치라 이 서버보다 큽니다).
 - 필요 메모리 추정식(`server.py`의 `need_mb`): `가중치 × 1.25 + 150MB × 동시 수 + 300MB(CPU는 800MB)`. 가중치는 model.bin 크기(float16 저장), int8 계열은 그 절반입니다. 근거:
   - 이 PC 실측(RTX 5060 Ti): large-v3-turbo float16 적재 +2.0GB, 3동시 전사 +0.35GB / int8_float16 적재 +1.05GB, 3동시 +0.22GB. `num_workers=3`이어도 가중치는 한 벌만 올라갑니다(1과 3이 같은 2.0GB).
   - [faster-whisper 벤치마크](https://github.com/SYSTRAN/faster-whisper#benchmark): large-v2 GPU fp16 4,525MB · int8 2,926MB, small CPU int8 1,477MB.
 - 모든 프리셋은 CTranslate2 변환본이고 원본 저장소는 `base_model`(예 `openai/whisper-large-v3-turbo`)에 나옵니다. 라이선스: Systran 변환본·원본 Whisper MIT, deepdml 변환본 MIT(HF 카드 기준).
-- 한국어 품질 수치(모델별 한국어 WER/CER)는 공개 출처에서 확인하지 못했습니다(확인 불가). 이 PC의 한국어 TTS 문장(Windows Heami 음성) 시험에서는 small·large-v3-turbo 모두 문장을 정확히 옮겼습니다(turbo는 "다음주"로 붙여 씀).
+- 한국어 품질 수치(모델별 한국어 WER/CER)는 공개 출처에서 확인하지 못했습니다(확인 불가). 이 PC의 한국어 합성 음성 문장 시험(저장소에 두지 않음)에서는 small·large-v3-turbo 모두 문장을 정확히 옮겼습니다(turbo는 "다음주"로 붙여 씀).
 
 ### Nemotron 3.5 ASR 메모
 
@@ -89,7 +140,15 @@ STT_API_KEY=... STT_HOST=0.0.0.0 STT_PORT=8000 uv run server.py
 
 ## 3. 장비별 동작
 
-모델을 올릴 때(첫 전사 또는 [적용] 직후) `nvidia-smi`로 GPU별 여유 VRAM, `psutil`로 여유 RAM을 읽어 배치를 정합니다.
+모델을 올릴 때(첫 전사 또는 [적용] 직후) GPU별 여유 VRAM(NVIDIA `nvidia-smi`, AMD HIP `hipMemGetInfo` 또는 Linux sysfs, Intel OpenVINO `GPU_DEVICE_TOTAL_MEM_SIZE`)과 `psutil` 여유 RAM을 읽어 배치를 정합니다.
+
+| 실행부(`backends.py`) | device 값 | 정밀도 강등 | 비고 |
+|---|---|---|---|
+| CT2 · NVIDIA | `cuda:0,1` | float16 → int8_float16 → int8 → CPU int8 | 이 PC 실측 |
+| CT2 · AMD ROCm | `rocm:0` | 같음 | **실험**. CTranslate2 해제·종료 멈춤 버그(#2038·#2085) 때문에 모델을 바꿀 때 내리지 않고 프로세스를 다시 띄웁니다. 대상 GPU: gfx1030·1100~1102·1150·1151·1200·1201. 실기 시험 없음 |
+| OpenVINO · Intel | `openvino:GPU.0` | float16 → int8 → int4 → OpenVINO CPU | 정밀도마다 공식 변환본 저장소가 따로라(`OpenVINO/whisper-*-{fp16,int8,int4}-ov`) [적용] 때 장비에 맞는 정밀도를 받고, 받은 정밀도 안에서 낮춥니다. 모델 id·표시 이름은 그대로, 실제 저장소는 `source`. 30초 이하 구간은 faster-whisper VAD로 만듭니다. 외장 GPU 여유는 전체의 90%, 내장 GPU는 RAM 여유로 봅니다(OpenVINO가 남은 VRAM을 주지 않음). GPU 실기 시험 없음(CPU 장치로 경로 시험) |
+| CT2 · CPU | `cpu` | int8 | |
+| Torch · Nemotron | `cuda:0` | float16 → CPU float32 | NVIDIA 전용 |
 
 | 경우 | 동작 | 이 PC 실측 |
 |---|---|---|
@@ -123,13 +182,13 @@ STT_API_KEY=... STT_HOST=0.0.0.0 STT_PORT=8000 uv run server.py
 
 | 필드 | 뜻 |
 |---|---|
-| `id` | 전사 요청의 `model` 값이자 받을 Hugging Face 저장소 |
+| `id` | 전사 요청의 `model` 값(프리셋 id). CT2 실행부는 이 저장소를 받고, OpenVINO 실행부는 `source`의 변환본을 받습니다 |
 | `owned_by` / `family` / `display_name` / `base_model` / `source` / `format` | 사람이 읽는 계열 정보. `owned_by`는 원본 제작자(Whisper는 `openai`), `source`는 실제로 받는 변환본 저장소 |
 | `status` | `ready` · `downloading` · `not_downloaded` |
 | `progress` | `downloading`일 때 0~0.99. 파일 단위로 갱신되어 몇 초씩 멈췄다 뛸 수 있습니다. 전체 크기를 아직 모르면 없습니다. |
 | `error` | `not_downloaded`이고 마지막 받기가 실패했을 때 이유 |
 | `fits` | 이 장비에서 돌 수 있는지. 크기를 아직 모르면(기동 직후 수 초) `null` |
-| `device` / `compute_type` | 올렸거나 올릴 배치. 예 `"cuda:0,1"` · `"cuda:1"` · `"cpu"`, `"float16"` · `"int8_float16"` · `"int8"` |
+| `device` / `compute_type` | 올렸거나 올릴 배치. 예 `"cuda:0,1"` · `"rocm:0"` · `"openvino:GPU.0"` · `"cpu"`, `"float16"` · `"int8_float16"` · `"int8"` · `"int4"`(OpenVINO) |
 | `rtf` | `ready`일 때만. 이 장비 실측 처리시간 ÷ 오디오 길이의 이동평균(최근 값 30%). 실측 전이나 다시 올린 뒤에는 `null`. 동시 요청 중이면 커집니다. |
 
 `GET /v1/models/{id}`는 같은 항목 하나를 돌려줍니다.
@@ -193,14 +252,17 @@ multipart: `file`(webm/Opus, wav 등 PyAV가 읽는 형식), `model`, `language`
 ## 7. 시험
 
 ```bash
-uv run --no-project --with fastapi,psutil,python-multipart,numpy python test_plan.py   # 장비 4경우 배치 계산
+uv run --no-project --python 3.12 --with fastapi,psutil,python-multipart,numpy python test_plan.py   # 배치 계산·장치 판별(가짜 장치)·의존성 목록 일치
+uv run --no-project --with "faster-whisper>=1.1,<2" --with "av<17" --with fastapi,psutil,python-multipart python test_link.py   # 연결(가짜 core)
+docker run --rm -v ./samples:/app/samples:ro -v ./test_decode.py:/app/test_decode.py:ro --entrypoint python udally-stt:cpu test_decode.py   # 이미지 디코드·GPL 부재
+sh -n scripts/install.sh && UDALLY_DRY_RUN=1 UDALLY_FORCE=uv UDALLY_SOURCE=. sh scripts/install.sh   # 설치 스크립트 드라이런
 curl -H "Authorization: Bearer $KEY" http://127.0.0.1:8000/v1/models
 curl -H "Authorization: Bearer $KEY" -X POST http://127.0.0.1:8000/v1/models/Systran%2Ffaster-whisper-small
-curl -H "Authorization: Bearer $KEY" -F file=@samples/ko.webm -F model=Systran/faster-whisper-small -F language=ko \
+curl -H "Authorization: Bearer $KEY" -F file=@samples/tone.webm -F model=Systran/faster-whisper-small -F language=ko \
      http://127.0.0.1:8000/v1/audio/transcriptions
 ```
 
-`samples/`는 Windows 한국어 TTS로 만든 문장(webm/Opus 48kHz, wav 16kHz mono)과 2초 440Hz 톤입니다. 공개 데이터셋은 쓰지 않았습니다.
+`samples/`는 합성 440Hz 톤(2초)을 6형식(mp3·m4a·wav·ogg·opus·webm)과 영상이 섞인 webm·m4a로 만든 것입니다. 사람 목소리·TTS 음성은 저장소에 두지 않습니다(한국어 전사 품질 시험은 각자 녹음으로).
 
 ## 8. 검토했으나 제외한 것
 
@@ -218,3 +280,22 @@ curl -H "Authorization: Bearer $KEY" -F file=@samples/ko.webm -F model=Systran/f
 - 크기 정보는 기동 직후 Hugging Face API로 한 번 읽습니다. 오프라인이면 받지 않은 모델의 `fits`가 `null`로 남습니다.
 - 첫 GPU 적재는 CUDA 첫 실행 컴파일 때문에 오래 걸릴 수 있습니다(이 PC RTX 5060 Ti: 최대 약 30초, 캐시가 생긴 뒤 5~16초). 그래서 [적용]·받기 완료 때 미리 올립니다. 시험 중 첫 기동 1회에서 전사 요청이 응답 없이 끊긴 일이 있었으나 재현되지 않았습니다(원인 확인 불가).
 - Windows에서 uv로 띄우고 출력을 파일로 돌리면 로그가 CP949로 저장됩니다.
+
+## 10. 라이선스
+
+**이 저장소의 코드·스크립트·문서는 [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0)입니다(`LICENSE`).** 소스는 공개하지만 상업적 사용은 허용하지 않습니다. OSI 승인 오픈소스 라이선스가 아니며, GitHub 저장소 정보에는 "Other"로 보입니다. SPDX: `PolyForm-Noncommercial-1.0.0`.
+
+| 쓸 수 있음(비상업 목적) | 쓸 수 없음(별도 허락 필요) |
+|---|---|
+| 개인의 연구·학습·취미·개인 용도("without any anticipated commercial application") | 영리 회사·단체의 업무용(수익 유무 무관, 사내 사용 포함) |
+| 자선 단체, 교육 기관, 공공 연구 기관, 공공 안전·보건 기관, 환경 보호 단체, 정부 기관(재원과 무관) | 이 서버를 사업용 서비스(SaaS 등)의 백엔드로 쓰기 |
+| 위 목적 안에서 수정·재배포(라이선스 사본과 `Required Notice` 줄 유지) | 위 목적 밖의 재배포 |
+
+- 상업 이용 문의: 이 저장소의 GitHub 이슈로 남겨 주세요.
+- 저작권자(Seokyoung-Hong)가 운영하는 유달리 서비스의 사용은 저작권자 본인의 사용이라 이 라이선스의 대상이 아닙니다.
+- **외부 기여(PR)는 받지 않습니다.** 기여분의 라이선스가 저작권자의 다른 사용과 충돌하지 않게 하려는 것입니다(CLA를 두지 않음). 버그·제안은 이슈로 남겨 주세요.
+- 이 라이선스는 이 저장소 저작물에만 적용됩니다. 의존성·NVIDIA 구성요소·Intel 구성요소·LGPL 구성요소·모델 가중치는 각자의 라이선스를 따르며, PolyForm Noncommercial이 그 권리를 제한하지 않습니다. 전체 목록과 고지는 `THIRD_PARTY_NOTICES`, 라이선스 전문은 `licenses/`, 이미지별 패키지 목록은 이미지 안 `/app/licenses/PACKAGES.txt`입니다.
+- 이미지의 FFmpeg는 GPL 부품(`--enable-gpl`, libx264·libx265 등) 없이 직접 빌드한 LGPL-2.1+ 공유 라이브러리이고, 그 소스(`/opt/ffmpeg/src`)를 이미지에 함께 둡니다. LGPL 구성요소의 수정·재링크·디버깅 목적 역공학은 이 저장소 라이선스로 제한하지 않습니다.
+- NVIDIA 라이브러리(cuBLAS·cuDNN 등)는 NVIDIA 약관에 따라 이 애플리케이션과 함께 쓰도록만 들어 있습니다. 이미지에서 꺼내 다른 용도로 쓰거나 재배포하지 마세요.
+- AMD ROCm 런타임은 이미지에 넣지 않고 사용자 PC가 AMD 공식 색인에서 직접 받습니다.
+- Intel OpenVINO 이미지에는 `openvino-telemetry` 패키지가 함께 설치될 수 있습니다(OpenVINO의 사용 통계 수집 모듈, 동의 기반). 이 서버는 이를 켜거나 부르지 않습니다.

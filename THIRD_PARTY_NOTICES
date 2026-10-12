@@ -1,0 +1,99 @@
+udally-stt — THIRD PARTY NOTICES (제3자 구성요소 고지)
+=====================================================
+
+이 저장소의 코드(server.py, link.py, backends.py, scripts/, Dockerfile, compose*.yaml, 문서)는
+PolyForm Noncommercial License 1.0.0(LICENSE)입니다. 아래 구성요소는 이 라이선스가 아니라 각자의 라이선스를 따르며,
+PolyForm Noncommercial은 아래 구성요소의 사용·수정·재배포 권리를 제한하지 않습니다.
+
+이미지 안 위치: /app/LICENSE, /app/THIRD_PARTY_NOTICES, /app/licenses/(라이선스 전문), /app/licenses/PACKAGES.txt
+(그 이미지에 실제로 든 Python 패키지 전부의 이름·버전·라이선스와 동봉 네이티브 라이브러리 목록 — 빌드 때 자동 생성).
+각 Python 패키지의 원래 라이선스 파일은 /usr/local/lib/python3.12/site-packages/*.dist-info/ 에 그대로 둡니다(지우지 않음).
+
+모델 가중치는 이미지·저장소에 들어 있지 않습니다. 사용자가 [모델 적용]으로 Hugging Face에서 직접 받으며
+각 모델의 원 라이선스(README "라이선스" 표: MIT · Apache-2.0 · OpenMDW-1.1)를 따릅니다.
+
+
+1. LGPL 구성요소
+----------------
+LGPL 구성요소는 별도 공유 라이브러리(.so)로 들어 있어 사용자가 같은 인터페이스의 다른 빌드로 바꿔 끼울 수 있습니다.
+이 저장소의 라이선스(PolyForm Noncommercial)는 LGPL 구성요소의 수정, 수정한 라이브러리와의 재링크,
+그 수정을 디버깅하기 위한 역공학을 제한하지 않습니다.
+전문: licenses/LGPL-2.1.txt, licenses/LGPL-3.0.txt, licenses/GPL-3.0.txt(LGPL-3.0이 참조).
+소스를 요청하면 아래 정확한 버전의 소스를 같은 곳(이 저장소 GitHub 이슈)에서 제공합니다.
+
+- FFmpeg 8.0.3 (libavcodec·libavformat·libavutil·libavfilter·libavdevice·libswresample·libswscale) — LGPL-2.1-or-later
+  위치: /opt/ffmpeg/lib. 이 이미지에서 직접 빌드했습니다: --enable-gpl·--enable-nonfree·--enable-version3·외부 코덱 라이브러리 없음
+  (--disable-autodetect, 오디오 디코더·분리기만). libx264·libx265 등 GPL 구성요소는 들어 있지 않습니다.
+  소스: 이미지 안 /opt/ffmpeg/src/ffmpeg-8.0.3.tar.xz (원본 https://ffmpeg.org/releases/ffmpeg-8.0.3.tar.xz,
+  sha256 6136812ea6d4e68bdba27e33c2a94382711cdf4f8602ffef056ff792bd6f9818), configure 기록: /opt/ffmpeg/src/configure.log,
+  configure 옵션: Dockerfile.
+  참고: PyPI의 PyAV(av) 휠은 libx264·libx265를 링크한 FFmpeg를 동봉합니다. 그래서 이미지에서는 쓰지 않고
+  PyAV 16.1.0을 소스(https://files.pythonhosted.org/ → av-16.1.0.tar.gz, BSD-3-Clause)에서 위 FFmpeg로 빌드했습니다.
+- libquadmath (numpy 휠 동봉, numpy.libs/) — LGPL-2.1-or-later. GCC 소스: https://ftp.gnu.org/gnu/gcc/
+  (numpy-*.dist-info/licenses/LICENSE.txt에 동봉 고지가 있습니다).
+- [nemotron, 로컬 빌드 전용] libsndfile (soundfile 휠 동봉, _soundfile_data/) — LGPL-2.1-or-later.
+  소스: https://github.com/libsndfile/libsndfile/releases (soundfile 버전에 맞는 릴리스, PACKAGES.txt 참고)
+- [nemotron, 로컬 빌드 전용] libsoxr (python-soxr 휠, 정적 포함) — LGPL-2.1-or-later.
+  소스: https://github.com/dofuuz/python-soxr (해당 버전 태그, libsoxr 하위 모듈 포함)
+
+
+2. GCC 런타임(예외 포함 GPL)
+---------------------------
+- libgomp (ctranslate2.libs/), libgfortran (numpy.libs/) — GPL-3.0-or-later WITH GCC-exception-3.1.
+  GCC 런타임 라이브러리 예외에 따라 이를 사용하는 프로그램의 라이선스에는 GPL 조건이 적용되지 않습니다.
+  전문: licenses/GPL-3.0.txt, licenses/GCC-exception-3.1.txt. 소스: https://ftp.gnu.org/gnu/gcc/
+
+
+3. NVIDIA 구성요소 (cuda 이미지, nemotron 로컬 빌드)
+-----------------------------------------------
+cuBLAS·cuBLASLt(nvidia-cublas-cu12), NVRTC(nvidia-cuda-nvrtc-cu12), cuDNN(nvidia-cudnn-cu12),
+[nemotron, 로컬 빌드] CUDA Runtime·cuFFT·cuRAND·cuSOLVER·cuSPARSE·cuSPARSELt·CUPTI·nvJitLink·NVTX(Apache-2.0)·cuFile·NCCL(BSD-3-Clause)·NVSHMEM.
+- NVIDIA CUDA Toolkit EULA(부속서 A 재배포 가능 목록) 및 cuDNN·cuSPARSELt 소프트웨어 라이선스 계약과 보충서가 적용됩니다.
+  전문: 각 휠의 /usr/local/lib/python3.12/site-packages/nvidia_*.dist-info/licenses/License.txt
+  (cuSPARSELt: site-packages/nvidia/cusparselt/LICENSE.txt). https://docs.nvidia.com/cuda/eula/index.html
+- NVIDIA 구성요소는 PolyForm Noncommercial이 아니라 NVIDIA의 약관을 따릅니다. 이 애플리케이션(udally-stt)과 함께,
+  이 애플리케이션을 통해서만 쓰도록 배포됩니다. 이미지에서 따로 꺼내 다른 용도로 쓰거나 재배포하지 마세요.
+  NVIDIA 약관이 허용하는 범위를 넘어 역공학·역컴파일·역어셈블할 수 없습니다.
+- 빼낸 것: nemotron 빌드에서 triton(ptxas·cuobjdump·nvdisasm 등 NVIDIA 개발 도구 동봉 — 재배포 목록에 없음)을 설치 뒤 제거합니다.
+  NCCL(BSD-3-Clause)·cuFile·NVSHMEM은 torch(libtorch_cuda.so)가 링크해 뺄 수 없고(빼면 import torch 실패, 실측),
+  NVSHMEM의 재배포 근거가 불명확해 nemotron 이미지는 공개 배포하지 않습니다. 사용자가 이 저장소에서 직접 빌드합니다(README).
+
+
+4. Intel 구성요소
+----------------
+- Intel oneAPI Math Kernel Library(oneMKL) — CTranslate2 휠(libctranslate2)에 정적으로 포함. Intel Simplified Software License
+  (Version October 2022), 전문: licenses/ISSL-2022-10.txt. Copyright (c) Intel Corporation.
+- oneDNN — CTranslate2 휠에 정적으로 포함. Apache-2.0, https://github.com/uxlfoundation/oneDNN
+- [openvino 이미지] OpenVINO, OpenVINO GenAI, OpenVINO Tokenizers — Apache-2.0 (licenses/Apache-2.0.txt).
+  동봉 제3자 고지: site-packages/openvino*/ 안 third-party-programs*.txt (oneTBB 등). 텔레메트리 패키지
+  openvino-telemetry가 함께 설치될 수 있습니다(README 참고).
+
+
+5. 라이선스 파일이 휠에 없는 패키지(보충 고지)
+--------------------------------------------
+- CTranslate2 4.8.2 — MIT, Copyright (c) 2019 OpenNMT. https://github.com/OpenNMT/CTranslate2/blob/master/LICENSE (licenses/MIT.txt)
+  [rocm] AMD용은 OpenNMT 공식 GitHub 릴리스 v4.8.2 자산 rocm-python-wheels-Linux.zip
+  (sha256 b469e765f74ef85fb97bf4fe2347c8c6296dda00d7f5cf20658f23e95004a925)의 cp312 휠입니다. LLVM OpenMP(libomp,
+  Apache-2.0 WITH LLVM-exception)를 동봉합니다.
+- ONNX Runtime — MIT, Copyright (c) Microsoft Corporation. 고지: site-packages/onnxruntime/ThirdPartyNotices.txt
+- Hugging Face tokenizers — Apache-2.0. https://github.com/huggingface/tokenizers
+- FlatBuffers — Apache-2.0, Copyright Google Inc. https://github.com/google/flatbuffers
+- Silero VAD 모델(faster_whisper/assets/silero_vad_v6.onnx) — MIT, Copyright (c) 2020-present Silero Team.
+  https://github.com/snakers4/silero-vad
+- MPL-2.0 구성요소(무수정): certifi(설치된 경우), tqdm(MPL-2.0 AND MIT) — 소스 https://pypi.org/project/<이름>/<버전>/,
+  전문 licenses/MPL-2.0.txt.
+
+
+6. AMD ROCm (rocm 이미지·uv 설치)
+--------------------------------
+ROCm 런타임은 이미지에 넣지 않습니다. 첫 실행 때(또는 설치 스크립트가) 사용자 PC가 AMD 공식 색인
+(Linux: https://repo.amd.com/rocm/whl/<GPU 계열>/ rocm[libraries]==7.13.0, Windows: https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/)
+에서 직접 받으며 AMD의 라이선스(https://rocm.docs.amd.com/en/latest/about/license.html)를 따릅니다.
+PyPI의 `rocm`·`rocm-sdk-core` 이름 패키지는 쓰지 않습니다.
+
+
+7. 운영체제 기반 이미지
+---------------------
+python:3.12-slim (Debian) 위에 만듭니다. 각 Debian 패키지의 라이선스는 /usr/share/doc/<패키지>/copyright,
+정확한 버전의 소스는 https://snapshot.debian.org/ (패키지 목록: dpkg -l). 이 패키지들은 별개 프로그램으로 함께 담긴 것(aggregate)입니다.
+CPython: PSF License 2.0.
