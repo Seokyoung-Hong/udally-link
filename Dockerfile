@@ -9,7 +9,7 @@ ARG NEMOTRON=0
 # server.py가 바뀌면 이 단계가 다시 돌지만 uv 캐시 마운트 덕에 내려받기는 다시 하지 않는다.
 RUN --mount=type=cache,target=/root/.cache/uv uv export --script server.py --no-hashes -o /tmp/req.txt \
  && if [ "$GPU" = 1 ]; then echo "nvidia-cublas-cu12" >> /tmp/req.txt && echo "nvidia-cudnn-cu12==9.*" >> /tmp/req.txt; fi \
- && if [ "$NEMOTRON" = 1 ]; then echo "torch>=2.8" >> /tmp/req.txt && echo "transformers>=5.13" >> /tmp/req.txt; fi \
+ && if [ "$NEMOTRON" = 1 ]; then echo "torch>=2.8" >> /tmp/req.txt && echo "transformers>=5.13" >> /tmp/req.txt && echo "librosa" >> /tmp/req.txt; fi \
  && uv pip install --system --link-mode=copy --extra-index-url https://download.pytorch.org/whl/cu128 \
       --index-strategy unsafe-best-match -r /tmp/req.txt && rm /tmp/req.txt \
  && useradd -m app && mkdir /cache && chown app /cache

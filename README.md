@@ -15,9 +15,11 @@ OpenAI 호환 `POST /v1/audio/transcriptions`에 더해, 유달리 설정 화면
 cp .env.example .env          # STT_API_KEY 등 값 고치기
 docker compose up -d --build                                   # CPU
 docker compose -f compose.yaml -f compose.cuda.yaml up -d --build   # NVIDIA GPU
+docker compose -f compose.yaml -f compose.cuda.yaml -f compose.nemotron.yaml up -d --build   # GPU + NVIDIA Nemotron
 ```
 
-- 이미지 크기(이 PC 실측): CPU 849MB, CUDA 4.6GB(cuBLAS·cuDNN 포함). 기반은 `python:3.12-slim`입니다.
+- 이미지 크기(이 PC 실측): CPU 824MB, CUDA 4.6GB(cuBLAS·cuDNN 포함), Nemotron 11.2GB(PyTorch CUDA 12.8·Transformers·librosa 추가). 기반은 `python:3.12-slim`입니다.
+- Nemotron 프리셋은 PyTorch와 Transformers가 있을 때만 목록에 나타납니다. 기본 CPU·CUDA 이미지에서는 보이지 않습니다.
 - GPU는 NVIDIA 드라이버와 NVIDIA Container Toolkit(Windows는 Docker Desktop WSL2)이 필요합니다.
 - 받은 모델과 CUDA 첫 실행 캐시는 `models` 볼륨(`/cache`)에 남습니다. 컨테이너를 지워도 다시 받지 않습니다.
 - **기동할 때 모델을 받지 않습니다.** 유달리 설정 화면의 [적용]이 받기를 시작합니다(4절).
@@ -37,7 +39,7 @@ STT_API_KEY=... STT_HOST=0.0.0.0 STT_PORT=8000 uv run server.py
 | 이름 | 기본값 | 설명 |
 |---|---|---|
 | `STT_API_KEY` | (없음) | 정하면 모든 경로에 `Authorization: Bearer <키>`가 필요합니다. 비우면 무인증입니다. |
-| `STT_MODELS` | 아래 프리셋 4개 | `/v1/models`에 보일 모델 ID(쉼표 구분). 여기에 없는 ID는 404입니다. |
+| `STT_MODELS` | 아래 프리셋 5개(Nemotron은 해당 이미지에서만) | `/v1/models`에 보일 모델 ID(쉼표 구분). 여기에 없는 ID는 404입니다. |
 | `STT_DEVICE` | `auto` | `auto`(GPU가 있으면 GPU) · `cuda` · `cpu` |
 | `STT_GPUS` | 전부 | 쓸 GPU 번호(nvidia-smi 번호). 예 `0,1`. `CUDA_VISIBLE_DEVICES`와 함께 쓰지 마세요(번호가 어긋납니다). |
 | `STT_CPU_FALLBACK` | `1` | GPU 메모리가 모자라거나 GPU를 쓸 수 없을 때 CPU로 내립니다. `0`이면 거절합니다. |
@@ -53,7 +55,7 @@ STT_API_KEY=... STT_HOST=0.0.0.0 STT_PORT=8000 uv run server.py
 | `Systran/faster-whisper-medium` | OpenAI Whisper medium | 1.53GB | 여유 있는 CPU, 4GB GPU | 2.6GB / 1.7GB / 2.2GB | 약 2배¹ |
 | `deepdml/faster-whisper-large-v3-turbo-ct2` | OpenAI Whisper large-v3-turbo | 1.62GB | **GPU 기본** | 2.7GB / 1.7GB / 2.2GB | 약 8배¹. 이 PC GPU 2장에서 6.3초 음성 3동시 0.4~0.8초 |
 | `Systran/faster-whisper-large-v3` | OpenAI Whisper large-v3 | 3.09GB | 6GB 이상 GPU(최고 품질) | 4.4GB / 2.6GB / 3.1GB | 1배(기준)¹ |
-| `nvidia/nemotron-3.5-asr-streaming-0.6b` | NVIDIA Nemotron 3.5 ASR 0.6B | 2.55GB(float32) | NVIDIA GPU, **`udally-stt:nemotron` 이미지에서만 보임** | 2.4GB / (없음) / CPU float32 3.9GB | NEMOTRON_RESULT |
+| `nvidia/nemotron-3.5-asr-streaming-0.6b` | NVIDIA Nemotron 3.5 ASR 0.6B | 2.55GB(float32) | NVIDIA GPU, **`udally-stt:nemotron` 이미지에서만 보임** | 2.1GB(GPU당, 실측 약 1.4GB) / (없음) / CPU float32 3.9GB | 이 PC GPU 2장(float16)에서 6.3초 음성 단건 0.4~0.7초, 3동시 0.7~1.0초(rtf 0.16~0.23). 첫 적재 약 14초 |
 
 ### 라이선스(상업적 사용)
 
@@ -76,6 +78,14 @@ STT_API_KEY=... STT_HOST=0.0.0.0 STT_PORT=8000 uv run server.py
   - [faster-whisper 벤치마크](https://github.com/SYSTRAN/faster-whisper#benchmark): large-v2 GPU fp16 4,525MB · int8 2,926MB, small CPU int8 1,477MB.
 - 모든 프리셋은 CTranslate2 변환본이고 원본 저장소는 `base_model`(예 `openai/whisper-large-v3-turbo`)에 나옵니다. 라이선스: Systran 변환본·원본 Whisper MIT, deepdml 변환본 MIT(HF 카드 기준).
 - 한국어 품질 수치(모델별 한국어 WER/CER)는 공개 출처에서 확인하지 못했습니다(확인 불가). 이 PC의 한국어 TTS 문장(Windows Heami 음성) 시험에서는 small·large-v3-turbo 모두 문장을 정확히 옮겼습니다(turbo는 "다음주"로 붙여 씀).
+
+### Nemotron 3.5 ASR 메모
+
+- 실행 경로는 모델 카드의 [Transformers "Offline transcription"](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) 예시(`AutoModelForRNNT`, `transformers>=5.13`)입니다. NIM·NeMo 없이 파일 전사가 됩니다.
+- `language=ko`를 그대로 넘깁니다(언어를 안 주면 `auto`). `prompt`(용어집)는 넣을 자리가 없어 무시합니다. VAD 없이 구간 전체를 한 번에 넣습니다.
+- `generate()`가 호출마다 모델 객체에 상태를 써서 동시에 부르면 `AttributeError`가 납니다(실측). 그래서 GPU당 한 번에 하나씩 처리하고, GPU가 여러 개면 GPU 사이에서 나눕니다.
+- 정밀도는 GPU float16, CPU float32뿐입니다(int8 단계 없음). CPU 전사 속도는 재지 않았습니다.
+- INT4 변환본 [onnx-community/...-onnx-int4](https://huggingface.co/onnx-community/nemotron-3.5-asr-streaming-0.6b-onnx-int4)는 라이선스 표기가 불명확하고(MIT와 NVIDIA Open Model License가 함께 적혀 있고 원본 OpenMDW 승계 표기가 없음) 실행 경로가 onnxruntime-genai뿐이라 넣지 않았습니다.
 
 ## 3. 장비별 동작
 
@@ -197,7 +207,7 @@ curl -H "Authorization: Bearer $KEY" -F file=@samples/ko.webm -F model=Systran/f
 | 대상 | 판단 | 근거 |
 |---|---|---|
 | [speaches](https://github.com/speaches-ai/speaches)(옛 faster-whisper-server, MIT) | 전사·`prompt`·Bearer 키는 맞지만 제외 | `GET /v1/models`가 **받은 모델만** 돌려주고 상태 필드가 없음, `POST /v1/models/{id}`가 받기가 끝날 때까지 응답을 막음(유달리 5초 제한), 장비 적합·속도 정보 없음. `ghcr.io/speaches-ai/speaches:latest-cpu`(압축 0.85GB)를 실제로 띄워 보니 `PRELOAD_MODELS`가 동작하지 않았고(이미지가 master보다 오래됨) 키를 정하면 `/health`도 403이었습니다. 필요한 부분을 앞단에서 메우면 경로 대부분을 다시 짜야 해서, 같은 엔진(faster-whisper)을 직접 쓰는 편이 짧았습니다. |
-| NVIDIA [Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) | **한국어 지원·라이선스 문제없음, 이번 프리셋에서는 제외(후속 후보)** | 40개 언어, ko-KR "Transcription-ready", FLEURS 한국어 CER 7.12%(1.12초 청크), 라이선스 OpenMDW-1.1, 600M. 다만 (1) 공식 실행은 NeMo `main` 브랜치·Linux·NVIDIA GPU 전제이고 최소 VRAM은 카드에 없음(확인 불가), (2) [Speech NIM](https://docs.nvidia.com/nim/speech/latest/asr/deploy-asr-models/nemotron-asr-streaming.html)은 스트리밍 전용(오프라인 HTTP 전사 미지원)이고 NGC 키가 필요, [지원표](https://docs.nvidia.com/nim/speech/latest/reference/support-matrix/asr.html)상 계산 능력 8.0 이상·16GB VRAM, (3) speaches의 NeMo 실행기(onnx-asr)는 `istupakov/parakeet-tdt` 계열만 받고 [onnx-asr](https://github.com/istupakov/onnx-asr)도 Nemotron을 지원 목록에 두지 않음. 별도 NeMo 백엔드를 만들고 검증하려면 PyTorch+NeMo 의존성 수 GB를 받아야 해 승인 없이 진행하지 않았습니다. |
+| NVIDIA [Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)를 NIM·NeMo로 실행 | **프리셋에는 Transformers 경로로 넣었고, NIM·NeMo 실행만 제외** | 40개 언어, ko-KR "Transcription-ready", FLEURS 한국어 CER 7.12%(1.12초 청크), 라이선스 OpenMDW-1.1, 600M. 다만 (1) 공식 실행은 NeMo `main` 브랜치·Linux·NVIDIA GPU 전제이고 최소 VRAM은 카드에 없음(확인 불가), (2) [Speech NIM](https://docs.nvidia.com/nim/speech/latest/asr/deploy-asr-models/nemotron-asr-streaming.html)은 스트리밍 전용(오프라인 HTTP 전사 미지원)이고 NGC 키가 필요, [지원표](https://docs.nvidia.com/nim/speech/latest/reference/support-matrix/asr.html)상 계산 능력 8.0 이상·16GB VRAM, (3) speaches의 NeMo 실행기(onnx-asr)는 `istupakov/parakeet-tdt` 계열만 받고 [onnx-asr](https://github.com/istupakov/onnx-asr)도 Nemotron을 지원 목록에 두지 않음. 별도 NeMo 백엔드를 만들고 검증하려면 PyTorch+NeMo 의존성 수 GB를 받아야 해 승인 없이 진행하지 않았습니다. |
 | NVIDIA [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), [Canary 1B v2](https://huggingface.co/nvidia/canary-1b-v2), [Canary 1B Flash](https://huggingface.co/nvidia/canary-1b-flash) | 제외 | HF 카드 언어 목록에 한국어 없음(유럽 언어 위주), CC-BY-4.0 |
 | 한국어 미세조정 Whisper | 제외 | Hugging Face에서 CTranslate2 형식 한국어 미세조정본은 주소 도메인 모델 1개(내려받기 7회)뿐이라 신뢰할 근거가 없음 |
 | [whisper.cpp server](https://github.com/ggerganov/whisper.cpp) | 조사하지 않음 | faster-whisper로 요구가 충족되어 더 보지 않았습니다. |

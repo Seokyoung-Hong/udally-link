@@ -280,7 +280,8 @@ def load(model_id: str) -> dict:
                 if p["device"] == "cpu" or isinstance(e, HTTPException):
                     raise
                 if not is_oom(e):
-                    if not CPU_FALLBACK:
+                    # CUDA 라이브러리 문제만 GPU 고장으로 본다(의존성 누락 등은 그대로 실패시킨다).
+                    if not CPU_FALLBACK or not re.search(r"cuda|cublas|cudnn|nvrtc", str(e), re.I):
                         raise
                     log.error("GPU를 쓸 수 없어 CPU로 바꿉니다: %s", e)
                     gpu_broken.append(str(e)[:200])
@@ -303,6 +304,8 @@ class Nemotron:
         dtype = torch.float16 if compute_type == "float16" else torch.float32
         dev = f"cuda:{device_index}" if device == "cuda" else "cpu"
         self.model = AutoModelForRNNT.from_pretrained(path, dtype=dtype).to(dev).eval()
+        # generate()가 호출마다 모델 객체에 상태를 써서 동시에 부르면 AttributeError가 난다(실측). GPU당 한 번에 하나.
+        self.lock = threading.Lock()
 
     def transcribe(self, data, language=None, initial_prompt=None, vad_filter=True):
         from types import SimpleNamespace
@@ -312,10 +315,10 @@ class Nemotron:
         audio = data if isinstance(data, numpy.ndarray) else decode_audio(data, sampling_rate=sr)
         inputs = self.processor(audio, sampling_rate=sr, language=language or "auto")
         inputs.to(self.model.device, dtype=self.model.dtype)
-        with self.torch.inference_mode():
+        with self.lock, self.torch.inference_mode():
             out = self.model.generate(**inputs, return_dict_in_generate=True)
         text = self.processor.decode(out.sequences, skip_special_tokens=True)
-        text = text[0] if isinstance(text, list) else text
+        text = " ".join((text[0] if isinstance(text, list) else text).split())
         return [SimpleNamespace(text=text)], SimpleNamespace(duration=len(audio) / sr)
 
 
