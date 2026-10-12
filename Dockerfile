@@ -4,10 +4,14 @@ WORKDIR /app
 COPY server.py .
 # 의존성은 server.py 머리(PEP 723) 한 곳에만 적는다. GPU=1이면 CUDA 12 cuBLAS·cuDNN 9를 함께 넣는다.
 ARG GPU=0
+# NEMOTRON=1이면 NVIDIA Nemotron 3.5 ASR용 PyTorch(CUDA 12.8)·Transformers를 더한다(수 GB가 커져 별도 태그 udally-stt:nemotron).
+ARG NEMOTRON=0
 # server.py가 바뀌면 이 단계가 다시 돌지만 uv 캐시 마운트 덕에 내려받기는 다시 하지 않는다.
 RUN --mount=type=cache,target=/root/.cache/uv uv export --script server.py --no-hashes -o /tmp/req.txt \
  && if [ "$GPU" = 1 ]; then echo "nvidia-cublas-cu12" >> /tmp/req.txt && echo "nvidia-cudnn-cu12==9.*" >> /tmp/req.txt; fi \
- && uv pip install --system --link-mode=copy -r /tmp/req.txt && rm /tmp/req.txt \
+ && if [ "$NEMOTRON" = 1 ]; then echo "torch>=2.8" >> /tmp/req.txt && echo "transformers>=5.13" >> /tmp/req.txt; fi \
+ && uv pip install --system --link-mode=copy --extra-index-url https://download.pytorch.org/whl/cu128 \
+      --index-strategy unsafe-best-match -r /tmp/req.txt && rm /tmp/req.txt \
  && useradd -m app && mkdir /cache && chown app /cache
 # pip로 넣은 CUDA 라이브러리 위치(GPU=0이면 없는 경로라 무해)
 ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib \

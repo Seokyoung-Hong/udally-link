@@ -53,6 +53,22 @@ STT_API_KEY=... STT_HOST=0.0.0.0 STT_PORT=8000 uv run server.py
 | `Systran/faster-whisper-medium` | OpenAI Whisper medium | 1.53GB | 여유 있는 CPU, 4GB GPU | 2.6GB / 1.7GB / 2.2GB | 약 2배¹ |
 | `deepdml/faster-whisper-large-v3-turbo-ct2` | OpenAI Whisper large-v3-turbo | 1.62GB | **GPU 기본** | 2.7GB / 1.7GB / 2.2GB | 약 8배¹. 이 PC GPU 2장에서 6.3초 음성 3동시 0.4~0.8초 |
 | `Systran/faster-whisper-large-v3` | OpenAI Whisper large-v3 | 3.09GB | 6GB 이상 GPU(최고 품질) | 4.4GB / 2.6GB / 3.1GB | 1배(기준)¹ |
+| `nvidia/nemotron-3.5-asr-streaming-0.6b` | NVIDIA Nemotron 3.5 ASR 0.6B | 2.55GB(float32) | NVIDIA GPU, **`udally-stt:nemotron` 이미지에서만 보임** | 2.4GB / (없음) / CPU float32 3.9GB | NEMOTRON_RESULT |
+
+### 라이선스(상업적 사용)
+
+모두 상업적 사용이 가능한 것만 프리셋에 넣었습니다(2026-10-12 확인). 배포할 때는 각 라이선스 고지를 함께 둡니다.
+
+| 모델 ID | 가중치(원본) | 변환본 | 상업 사용 |
+|---|---|---|---|
+| `Systran/faster-whisper-small` | MIT — [openai/whisper README "License"](https://github.com/openai/whisper#license)("code and model weights are released under the MIT License"). HF [openai/whisper-small](https://huggingface.co/openai/whisper-small) 표기는 Apache-2.0 | MIT — [HF 카드](https://huggingface.co/Systran/faster-whisper-small) | 가능 |
+| `Systran/faster-whisper-medium` | 위와 같음([openai/whisper-medium](https://huggingface.co/openai/whisper-medium) 표기 Apache-2.0) | MIT — [HF 카드](https://huggingface.co/Systran/faster-whisper-medium) | 가능 |
+| `deepdml/faster-whisper-large-v3-turbo-ct2` | MIT — [openai/whisper-large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo) | MIT — [HF 카드](https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2) | 가능 |
+| `Systran/faster-whisper-large-v3` | 위 MIT([openai/whisper-large-v3](https://huggingface.co/openai/whisper-large-v3) 표기 Apache-2.0) | MIT — [HF 카드](https://huggingface.co/Systran/faster-whisper-large-v3) | 가능 |
+| `nvidia/nemotron-3.5-asr-streaming-0.6b` | [OpenMDW-1.1](https://openmdw.ai/license/1-1/) — "deal in the Model Materials without restriction", 배포 시 라이선스 사본·고지 유지, 특허 소송 시 종료. 출력물에는 제한 없음 | (원본 그대로 사용) | 가능 |
+
+- 원본 Whisper는 GitHub(MIT)과 HF(Apache-2.0) 표기가 다르지만 둘 다 상업 사용을 허용합니다.
+- 실행 라이브러리: faster-whisper·CTranslate2 MIT, PyTorch BSD-3, Transformers Apache-2.0.
 
 - ¹ [openai/whisper README "Available models"](https://github.com/openai/whisper#available-models-and-languages)의 상대 속도(원본 PyTorch 기준. 같은 표의 VRAM 1~10GB는 PyTorch fp32 수치라 이 서버보다 큽니다).
 - 필요 메모리 추정식(`server.py`의 `need_mb`): `가중치 × 1.25 + 150MB × 동시 수 + 300MB(CPU는 800MB)`. 가중치는 model.bin 크기(float16 저장), int8 계열은 그 절반입니다. 근거:

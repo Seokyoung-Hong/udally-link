@@ -18,6 +18,7 @@
 import asyncio
 import contextlib
 import fnmatch
+import importlib.util
 import logging
 import math
 import os
@@ -37,11 +38,14 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 env = os.environ.get
-PRESETS = [m.strip() for m in env(
+NEMOTRON = "nvidia/nemotron-3.5-asr-streaming-0.6b"
+# Nemotron은 PyTorch·Transformers가 있는 이미지(udally-stt:nemotron)에서만 목록에 넣는다.
+HAS_TORCH = all(importlib.util.find_spec(m) for m in ("torch", "transformers"))
+PRESETS = [m for m in (x.strip() for x in env(
     "STT_MODELS",
     "Systran/faster-whisper-small,Systran/faster-whisper-medium,"
-    "deepdml/faster-whisper-large-v3-turbo-ct2,Systran/faster-whisper-large-v3",
-).split(",") if m.strip()]
+    f"deepdml/faster-whisper-large-v3-turbo-ct2,Systran/faster-whisper-large-v3,{NEMOTRON}",
+).split(",")) if m and (m != NEMOTRON or HAS_TORCH)]
 API_KEY = env("STT_API_KEY") or None
 DEVICE = env("STT_DEVICE", "auto")  # auto | cuda | cpu
 FORCED_CT = env("STT_COMPUTE_TYPE") or None
@@ -50,6 +54,8 @@ CPU_FALLBACK = env("STT_CPU_FALLBACK", "1") == "1"
 CONCURRENCY = int(env("STT_CONCURRENCY", "3"))
 GPU_CTS = ["float16", "int8_float16", "int8"]  # 메모리가 모자라면 이 순서로 낮춘다
 FILES = ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*"]
+# Transformers 오프라인 전사에 필요한 파일만(.nemo·gguf 사본은 받지 않는다)
+NEMOTRON_FILES = ["config.json", "generation_config.json", "processor_config.json", "tokenizer*.json", "model.safetensors"]
 log = logging.getLogger("udally-stt")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -64,12 +70,12 @@ def need_mb(weights_mb: float, ct: str, conc: int, cpu: bool = False) -> int:
 
 
 def plan(weights_mb, gpus, ram_free_mb, level=0, device=DEVICE, forced=FORCED_CT,
-         cpu_fallback=CPU_FALLBACK, conc=CONCURRENCY) -> dict:
+         cpu_fallback=CPU_FALLBACK, conc=CONCURRENCY, gpu_cts=GPU_CTS, cpu_ct="int8") -> dict:
     """gpus: [{"index", "free_mb"}]. level: OOM으로 강등된 단계(0=float16부터)."""
     if weights_mb is None:
         return {"fits": None, "device": None, "compute_type": None}
     if device != "cpu" and gpus:
-        for ct in [forced] if forced else GPU_CTS[level:]:
+        for ct in [forced] if forced else gpu_cts[level:]:
             per_gpu = math.ceil(conc / len(gpus))
             ok = [g["index"] for g in gpus if g["free_mb"] >= need_mb(weights_mb, ct, per_gpu)]
             if ok:
@@ -78,7 +84,7 @@ def plan(weights_mb, gpus, ram_free_mb, level=0, device=DEVICE, forced=FORCED_CT
                         "gpus": ok, "workers": per_gpu, "need_mb": need_mb(weights_mb, ct, per_gpu)}
     if device != "cpu" and gpus and not cpu_fallback:  # GPU가 있는데 모자라면 CPU로 내리지 않는다
         return {"fits": False, "device": "cuda", "compute_type": None}
-    ct = forced if forced in ("int8", "float32") else "int8"
+    ct = forced if forced in ("int8", "float32") else cpu_ct
     need = need_mb(weights_mb, ct, conc, cpu=True)
     return {"fits": need <= ram_free_mb, "device": "cpu", "compute_type": ct, "gpus": [],
             "workers": conc, "need_mb": need}
@@ -122,12 +128,37 @@ def auth(authorization: str | None = Header(None)) -> None:
         raise HTTPException(401, "API 키가 맞지 않습니다(Authorization: Bearer <키>).")
 
 
-def local_path(model_id: str) -> str | None:
+def download(model_id: str, local_files_only: bool = False) -> str:
+    if model_id == NEMOTRON:
+        from huggingface_hub import snapshot_download
+        p = snapshot_download(model_id, allow_patterns=NEMOTRON_FILES, local_files_only=local_files_only)
+        if not (Path(p) / "model.safetensors").exists():
+            raise FileNotFoundError(p)
+        return p
     from faster_whisper import download_model
+    return download_model(model_id, local_files_only=local_files_only)
+
+
+def weights_file(model_id: str) -> str:
+    return "model.safetensors" if model_id == NEMOTRON else "model.bin"
+
+
+def to_fp16_mb(model_id: str, size: int) -> float:
+    # need_mb는 float16 저장 크기 기준이다. Nemotron safetensors는 float32라 절반으로 본다.
+    return size / 2**20 / (2 if model_id == NEMOTRON else 1)
+
+
+def local_path(model_id: str) -> str | None:
     try:
-        return download_model(model_id, local_files_only=True)
+        return download(model_id, local_files_only=True)
     except Exception:
         return None
+
+
+def plan_for(model_id: str, gpus_, ram, level=0) -> dict:
+    if model_id == NEMOTRON:  # PyTorch: GPU float16, CPU float32. int8 단계는 없다.
+        return plan(weights.get(model_id), gpus_, ram, level, forced=None, gpu_cts=["float16"], cpu_ct="float32")
+    return plan(weights.get(model_id), gpus_, ram, level)
 
 
 def fill_sizes() -> None:
@@ -137,12 +168,13 @@ def fill_sizes() -> None:
         try:
             p = local_path(m)
             if p and m not in sizes:
-                weights[m] = (Path(p) / "model.bin").stat().st_size / 2**20
+                weights[m] = to_fp16_mb(m, (Path(p) / weights_file(m)).stat().st_size)
                 continue
             info = HfApi().model_info(m, files_metadata=True)
-            files = [s for s in info.siblings if any(fnmatch.fnmatch(s.rfilename, pat) for pat in FILES)]
+            pats = NEMOTRON_FILES if m == NEMOTRON else FILES
+            files = [s for s in info.siblings if any(fnmatch.fnmatch(s.rfilename, pat) for pat in pats)]
             sizes[m] = sum(s.size or 0 for s in files)
-            weights[m] = sum(s.size or 0 for s in files if s.rfilename == "model.bin") / 2**20
+            weights[m] = to_fp16_mb(m, sum(s.size or 0 for s in files if s.rfilename == weights_file(m)))
         except Exception as e:
             log.warning("크기 확인 실패 %s: %s", m, e)
 
@@ -155,6 +187,9 @@ def blobs_size(model_id: str) -> int:
 
 def meta(model_id: str) -> dict:
     """사람이 읽는 표시 정보. id는 받을 Hugging Face 저장소(CTranslate2 변환본), base_model은 원본."""
+    if model_id == NEMOTRON:
+        return {"owned_by": "nvidia", "family": "Nemotron", "display_name": "NVIDIA Nemotron 3.5 ASR 0.6B",
+                "base_model": NEMOTRON, "source": NEMOTRON, "format": "Transformers"}
     m = re.search(r"whisper-(tiny|base|small|medium|large-v3-turbo|large-v3|large-v2|large)", model_id.lower())
     if not m:  # ponytail: 프리셋은 전부 Whisper 변환본이다. 다른 계열을 넣으면 여기에 규칙을 더한다.
         return {"owned_by": model_id.split("/")[0], "family": None, "display_name": model_id, "source": model_id}
@@ -176,7 +211,7 @@ def status_of(model_id: str, hw=None) -> dict:
         p = current["plan"]
     else:
         g, ram = hw or (gpus(), ram_free_mb())
-        p = plan(weights.get(model_id), g, ram, levels.get(model_id, 0))
+        p = plan_for(model_id, g, ram, levels.get(model_id, 0))
     item.update(fits=p["fits"], device=p["device"], compute_type=p["compute_type"])
     if item["status"] == "ready":
         item["rtf"] = round(rtf[model_id], 3) if model_id in rtf else None
@@ -184,10 +219,8 @@ def status_of(model_id: str, hw=None) -> dict:
 
 
 def fetch(model_id: str) -> None:
-    from faster_whisper import download_model
     try:
-        download_model(model_id)
-        weights[model_id] = (Path(local_path(model_id)) / "model.bin").stat().st_size / 2**20
+        weights[model_id] = to_fp16_mb(model_id, (Path(download(model_id)) / weights_file(model_id)).stat().st_size)
     except Exception as e:
         errors[model_id] = f"{type(e).__name__}: {e}"[:300]
         return
@@ -222,7 +255,8 @@ def load(model_id: str) -> dict:
             return current
         unload()
         while True:
-            p = plan(weights.get(model_id, 0), gpus(), ram_free_mb(), levels.get(model_id, 0))
+            weights.setdefault(model_id, 0)
+            p = plan_for(model_id, gpus(), ram_free_mb(), levels.get(model_id, 0))
             if not p["fits"]:
                 raise HTTPException(503, f"이 장비의 메모리로는 {model_id}를 올릴 수 없습니다(필요 약 {p.get('need_mb')}MB).")
             try:
@@ -230,8 +264,9 @@ def load(model_id: str) -> dict:
                 # GPU마다 모델 하나 + 전용 스레드 묶음. 한 스레드가 여러 GPU의 모델을 번갈아 부르면
                 # CTranslate2가 "CUDA failed with error invalid argument"로 실패한다(이 PC 실측).
                 kw = dict(compute_type=p["compute_type"], num_workers=p["workers"])
-                models = [WhisperModel(path, device="cuda", device_index=i, **kw) for i in p["gpus"]] or \
-                         [WhisperModel(path, device="cpu", **kw)]
+                cls = Nemotron if model_id == NEMOTRON else WhisperModel
+                models = [cls(path, device="cuda", device_index=i, **kw) for i in p["gpus"]] or \
+                         [cls(path, device="cpu", **kw)]
                 workers = [[m, 0, ThreadPoolExecutor(p["workers"])] for m in models]
                 # 1초 무음으로 한 번 돌려 본다: CUDA 라이브러리 누락(cublas64_12.dll 등)과 첫 실행 지연을 여기서 치른다.
                 for w in workers:
@@ -254,6 +289,34 @@ def load(model_id: str) -> dict:
                     raise HTTPException(503, f"GPU 메모리가 부족해 {model_id}를 {FORCED_CT}로 올리지 못했습니다.") from e
                 log.warning("올리다 메모리 부족 %s %s %s → 낮춰 다시 시도", model_id, p["device"], p["compute_type"])
                 levels[model_id] = levels.get(model_id, 0) + 1
+
+
+class Nemotron:
+    """모델 카드의 Transformers "Offline transcription" 예시를 faster-whisper WhisperModel과 같은 모양으로 감싼다.
+    prompt(용어집)를 넣을 자리가 없어 무시한다. VAD 없이 구간 전체를 한 번에 넣는다."""
+
+    def __init__(self, path, device, device_index=0, compute_type="float16", num_workers=1):
+        import torch
+        from transformers import AutoModelForRNNT, AutoProcessor
+        self.torch = torch
+        self.processor = AutoProcessor.from_pretrained(path)
+        dtype = torch.float16 if compute_type == "float16" else torch.float32
+        dev = f"cuda:{device_index}" if device == "cuda" else "cpu"
+        self.model = AutoModelForRNNT.from_pretrained(path, dtype=dtype).to(dev).eval()
+
+    def transcribe(self, data, language=None, initial_prompt=None, vad_filter=True):
+        from types import SimpleNamespace
+
+        from faster_whisper.audio import decode_audio
+        sr = self.processor.feature_extractor.sampling_rate
+        audio = data if isinstance(data, numpy.ndarray) else decode_audio(data, sampling_rate=sr)
+        inputs = self.processor(audio, sampling_rate=sr, language=language or "auto")
+        inputs.to(self.model.device, dtype=self.model.dtype)
+        with self.torch.inference_mode():
+            out = self.model.generate(**inputs, return_dict_in_generate=True)
+        text = self.processor.decode(out.sequences, skip_special_tokens=True)
+        text = text[0] if isinstance(text, list) else text
+        return [SimpleNamespace(text=text)], SimpleNamespace(duration=len(audio) / sr)
 
 
 def known(model_id: str) -> str:

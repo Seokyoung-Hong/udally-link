@@ -1,0 +1,8 @@
+# NVIDIA Nemotron 3.5 ASR까지 쓰는 GPU 변형(이미지에 PyTorch·Transformers가 더해져 큽니다).
+#   docker compose -f compose.yaml -f compose.cuda.yaml -f compose.nemotron.yaml up -d --build
+services:
+  stt:
+    build:
+      args:
+        NEMOTRON: "1"
+    image: udally-stt:nemotron
