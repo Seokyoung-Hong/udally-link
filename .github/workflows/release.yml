@@ -54,9 +54,14 @@ jobs:
           git config user.name github-actions && git config user.email github-actions@users.noreply.github.com
           git checkout -b "release-$v" && git commit -am "release $v: 설치 스크립트 릴리스 값" && git push origin "release-$v"
           echo "SCRIPTS_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - name: GCC 런타임 소스 받기(libgomp·libgfortran·libquadmath — THIRD_PARTY_NOTICES 1·2절, "같은 곳" 제공)
+        run: |
+          curl -fsSLO https://vault.almalinux.org/8.10/BaseOS/Source/Packages/gcc-8.5.0-29.el8_10.alma.1.src.rpm
+          sha256sum gcc-8.5.0-29.el8_10.alma.1.src.rpm > gcc-8.5.0-29.el8_10.alma.1.src.rpm.sha256
       - name: 릴리스 노트
         env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
         run: |
           gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "코드 커밋: $GITHUB_SHA
           설치 스크립트 커밋(core STT_RELEASE.commit): $SCRIPTS_COMMIT
-          digest: cpu ${{ needs.images.outputs.cpu }} · cuda ${{ needs.images.outputs.cuda }} · openvino ${{ needs.images.outputs.openvino }} · rocm ${{ needs.images.outputs.rocm }}"
+          digest: cpu ${{ needs.images.outputs.cpu }} · cuda ${{ needs.images.outputs.cuda }} · openvino ${{ needs.images.outputs.openvino }} · rocm ${{ needs.images.outputs.rocm }}" \
+            gcc-8.5.0-29.el8_10.alma.1.src.rpm gcc-8.5.0-29.el8_10.alma.1.src.rpm.sha256

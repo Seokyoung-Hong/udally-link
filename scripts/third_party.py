@@ -37,5 +37,15 @@ print("\n# 휠에 동봉된 네이티브 라이브러리(*.libs)")
 print("\n".join(libs))
 print("\n# FFmpeg(LGPL-2.1+, 이 이미지에서 빌드): /opt/ffmpeg/lib, 소스·configure: /opt/ffmpeg/src")
 print("\n".join(sorted(p.name for p in Path("/opt/ffmpeg/lib").glob("lib*.so.*") if not p.is_symlink())) if Path("/opt/ffmpeg/lib").exists() else "-")
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+
+if shutil.which("dpkg-query"):  # 이미지에 apt로 더한 실행 구성요소(openvino: OpenCL·Intel GPU runtime)
+    extra = subprocess.run(["dpkg-query", "-W", "-f", "${Package}=${Version}\t/usr/share/doc/${Package}/copyright\n",
+                            "ocl-icd-libopencl1", "intel-opencl-icd", "intel-igc-core-2", "intel-igc-opencl-2", "libigdgmm12"],
+                           capture_output=True, text=True, check=False).stdout.strip()
+    if extra:
+        print("\n# apt·Intel 릴리스 .deb로 더한 구성요소(고지 위치는 THIRD_PARTY_NOTICES 4절)")
+        print(extra)
 if bad:
     sys.exit("GPL 패키지가 들어 있습니다: " + "; ".join(bad))

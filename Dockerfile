@@ -49,16 +49,28 @@ RUN --mount=type=cache,target=/root/.cache/uv export PKG_CONFIG_PATH=/opt/ffmpeg
  && uv pip install --system --no-binary av --override /tmp/over.txt $X -r pyproject.toml \
  && if [ "$VARIANT" = nemotron ]; then uv pip uninstall --system $NEMOTRON_DROP; fi \
  && rm -rf /tmp/ct2*
+# Intel GPU(openvino): OpenVINO GPU 플러그인이 쓰는 Intel compute runtime(MIT). Debian 13(trixie)에는 intel-opencl-icd가 없어
+# Intel 공식 GitHub 릴리스 .deb를 sha256으로 고정해 받는다(compute-runtime 26.35.39758.10, IGC 2.41.5, gmmlib 22.10.0).
+ARG INTEL_DEBS="\
+https://github.com/intel/intel-graphics-compiler/releases/download/v2.41.5/intel-igc-core-2_2.41.5+22716_amd64.deb 0a6e64a663ae65a0fa02d6912ae3b6b37cf85b90c21cc423fd9fef70aaf4f628 \
+https://github.com/intel/intel-graphics-compiler/releases/download/v2.41.5/intel-igc-opencl-2_2.41.5+22716_amd64.deb 779e1b9e88098eb25711e9a8f67c2752665bad22f134aa40ed5649f6e1b87058 \
+https://github.com/intel/compute-runtime/releases/download/26.35.39758.10/intel-opencl-icd_26.35.39758.10-0_amd64.deb 61712caaddeba3d38e4f79e2a0fb23fea25596ca2d72c3144c6eea2331ec4301 \
+https://github.com/intel/compute-runtime/releases/download/26.35.39758.10/libigdgmm12_22.10.0_amd64.deb 6031a63d6e8a12ce61c14efc15f2c8e727061286e3820b8594e6d00615e04d54"
+RUN mkdir /debs && if [ "$VARIANT" = openvino ]; then set -- $INTEL_DEBS; while [ $# -gt 0 ]; do \
+      f="/debs/$(basename "$1")"; curl -fsSLo "$f" "$1" && echo "$2  $f" | sha256sum -c - || exit 1; shift 2; done; fi
 
 # ---------- 2. 실행 이미지 ----------
 FROM ${PY}
 COPY --from=build /opt/ffmpeg/lib /opt/ffmpeg/lib
 COPY --from=build /opt/ffmpeg/src /opt/ffmpeg/src
 COPY --from=build /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=build /debs /tmp/debs
 ARG VARIANT=cpu
-RUN echo /opt/ffmpeg/lib > /etc/ld.so.conf.d/ffmpeg.conf && ldconfig \
- && useradd -m app && mkdir /cache && chown app /cache \
- && if [ "$VARIANT" = rocm ]; then mkdir -p /opt/rocm-pip && chown app /opt/rocm-pip; fi
+# openvino: OpenCL ICD 로더(Debian ocl-icd-libopencl1, BSD-2-Clause) + 위 Intel compute runtime
+RUN if [ "$VARIANT" = openvino ]; then apt-get update && apt-get install -y --no-install-recommends ocl-icd-libopencl1 /tmp/debs/*.deb \
+      && rm -rf /var/lib/apt/lists/*; fi && rm -rf /tmp/debs \
+ && echo /opt/ffmpeg/lib > /etc/ld.so.conf.d/ffmpeg.conf && ldconfig \
+ && useradd -m app && mkdir /cache && chown app /cache
 WORKDIR /app
 COPY server.py link.py backends.py LICENSE THIRD_PARTY_NOTICES ./
 COPY licenses ./licenses

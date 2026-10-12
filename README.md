@@ -62,7 +62,7 @@ docker compose -f compose.yaml -f compose.cuda.yaml -f compose.nemotron.yaml up 
 ```
 
 - 변형은 Dockerfile `VARIANT`(cpu · cuda · nemotron · openvino · rocm) 하나로 고릅니다. 기반은 `python:3.12-slim`입니다.
-- 이미지 크기(이 PC 실측, 2026-10-13): cpu 650MB(이전 PyPI PyAV 824MB) · cuda 4.4GB(이전 4.6GB) · openvino 0.9GB · rocm 0.9GB(ROCm 런타임 제외, 첫 실행 때 받음) · nemotron 11.2GB(이전 12.4GB, torch 2.11.0+cu128·triton 제거).
+- 이미지 크기(이 PC 실측, 2026-10-13): cpu 650MB(이전 PyPI PyAV 824MB) · cuda 4.4GB(이전 4.6GB) · openvino 1.75GB(Intel GPU compute runtime 포함) · rocm 0.9GB(ROCm 런타임 제외, 첫 실행 때 받음) · nemotron 11.2GB(이전 12.4GB, torch 2.11.0+cu128·triton 제거).
 - PyAV는 PyPI 휠 대신 **GPL 부품 없는 디코드 전용 FFmpeg 8.0.3(LGPL-2.1+)**로 소스 빌드합니다(10절). 이 FFmpeg는 유달리 업로드 형식(mp3·m4a·wav·ogg·opus·webm)과 Discord 트랙(ogg/opus)의 오디오 디코더만 담습니다. `test_decode.py`가 이미지 안에서 6형식과 영상이 섞인 webm·m4a 디코드, libx264·libx265 부재를 확인합니다.
 - Nemotron 프리셋은 PyTorch와 Transformers가 있을 때만 목록에 나타납니다. **nemotron 이미지는 공개 배포하지 않습니다(로컬 빌드 전용)**: torch가 링크하는 NVIDIA NVSHMEM의 재배포 근거가 불명확해서입니다. torch는 `2.11.0+cu128`로 고정합니다(전에는 PyPI와 섞어 고르다 PyPI의 cu130 빌드가 들어왔습니다).
 - NVIDIA GPU는 NVIDIA 드라이버와 NVIDIA Container Toolkit(Windows는 Docker Desktop WSL2)이 필요합니다.

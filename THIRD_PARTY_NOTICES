@@ -29,8 +29,10 @@ LGPL 구성요소는 별도 공유 라이브러리(.so)로 들어 있어 사용�
   configure 옵션: Dockerfile.
   참고: PyPI의 PyAV(av) 휠은 libx264·libx265를 링크한 FFmpeg를 동봉합니다. 그래서 이미지에서는 쓰지 않고
   PyAV 16.1.0을 소스(https://files.pythonhosted.org/ → av-16.1.0.tar.gz, BSD-3-Clause)에서 위 FFmpeg로 빌드했습니다.
-- libquadmath (numpy 휠 동봉, numpy.libs/) — LGPL-2.1-or-later. GCC 소스: https://ftp.gnu.org/gnu/gcc/
-  (numpy-*.dist-info/licenses/LICENSE.txt에 동봉 고지가 있습니다).
+- libquadmath (numpy·scipy 휠 동봉, *.libs/) — LGPL-2.1-or-later. 아래 2절과 같은 GCC 8.5.0 런타임입니다(휠 빌드 환경 manylinux_2_28 = AlmaLinux 8의 시스템 라이브러리를 auditwheel이 복사, 기호 버전 GFORTRAN_8로 확인).
+  정확한 소스: AlmaLinux 8 gcc-8.5.0-29.el8_10.alma.1.src.rpm(https://vault.almalinux.org/8.10/BaseOS/Source/Packages/).
+  이 소스 패키지는 이미지 크기 영향(약 80MB) 때문에 이미지 대신 같은 GitHub 릴리스의 첨부물로 함께 제공합니다
+  (릴리스 워크플로가 첨부). 휠을 빌드한 시점의 AlmaLinux 개정(-26·-28·-29)은 확인하지 못했고, 요청하면 해당 개정 소스를 제공합니다.
 - [nemotron, 로컬 빌드 전용] libsndfile (soundfile 휠 동봉, _soundfile_data/) — LGPL-2.1-or-later.
   소스: https://github.com/libsndfile/libsndfile/releases (soundfile 버전에 맞는 릴리스, PACKAGES.txt 참고)
 - [nemotron, 로컬 빌드 전용] libsoxr (python-soxr 휠, 정적 포함) — LGPL-2.1-or-later.
@@ -39,9 +41,13 @@ LGPL 구성요소는 별도 공유 라이브러리(.so)로 들어 있어 사용�
 
 2. GCC 런타임(예외 포함 GPL)
 ---------------------------
-- libgomp (ctranslate2.libs/), libgfortran (numpy.libs/) — GPL-3.0-or-later WITH GCC-exception-3.1.
+- libgomp (ctranslate2.libs/ 등), libgfortran (numpy.libs/ 등) — GPL-3.0-or-later WITH GCC-exception-3.1.
   GCC 런타임 라이브러리 예외에 따라 이를 사용하는 프로그램의 라이선스에는 GPL 조건이 적용되지 않습니다.
-  전문: licenses/GPL-3.0.txt, licenses/GCC-exception-3.1.txt. 소스: https://ftp.gnu.org/gnu/gcc/
+  전문: licenses/GPL-3.0.txt, licenses/GCC-exception-3.1.txt.
+  GCC 8.5.0 런타임입니다(휠 빌드 환경 manylinux_2_28 = AlmaLinux 8의 시스템 라이브러리를 auditwheel이 복사, 기호 버전 GFORTRAN_8로 확인).
+  정확한 소스: AlmaLinux 8 gcc-8.5.0-29.el8_10.alma.1.src.rpm(https://vault.almalinux.org/8.10/BaseOS/Source/Packages/).
+  이 소스 패키지는 이미지 크기 영향(약 80MB) 때문에 이미지 대신 같은 GitHub 릴리스의 첨부물로 함께 제공합니다
+  (릴리스 워크플로가 첨부). 휠을 빌드한 시점의 AlmaLinux 개정(-26·-28·-29)은 확인하지 못했고, 요청하면 해당 개정 소스를 제공합니다.
 
 
 3. NVIDIA 구성요소 (cuda 이미지, nemotron 로컬 빌드)
@@ -67,6 +73,14 @@ cuBLAS·cuBLASLt(nvidia-cublas-cu12), NVRTC(nvidia-cuda-nvrtc-cu12), cuDNN(nvidi
 - [openvino 이미지] OpenVINO, OpenVINO GenAI, OpenVINO Tokenizers — Apache-2.0 (licenses/Apache-2.0.txt).
   동봉 제3자 고지: site-packages/openvino*/ 안 third-party-programs*.txt (oneTBB 등). 텔레메트리 패키지
   openvino-telemetry가 함께 설치될 수 있습니다(README 참고).
+- [openvino 이미지] Intel GPU compute runtime — Debian 13에 패키지가 없어 Intel 공식 GitHub 릴리스 .deb(sha256 고정, Dockerfile)를 넣습니다.
+  intel-opencl-icd 26.35.39758.10(MIT, 제3자 BSD-3-Clause·SGI — /usr/share/doc/intel-opencl-icd/copyright),
+  libigdgmm12 22.10.0(MIT — /usr/share/doc/libigdgmm12/copyright),
+  intel-igc-core-2·intel-igc-opencl-2 2.41.5(MIT, LLVM 등 제3자 Apache-2.0 계열 — /usr/local/lib/igc2/NOTICES.txt).
+  소스: https://github.com/intel/compute-runtime/tree/26.35.39758.10 , https://github.com/intel/intel-graphics-compiler/tree/v2.41.5 ,
+  https://github.com/intel/gmmlib/tree/intel-gmmlib-22.10.0
+- [openvino 이미지] OpenCL ICD 로더 ocl-icd-libopencl1 2.3.3-1(Debian 13 main) — BSD-2-Clause(licenses/BSD-2-Clause.txt),
+  Khronos 헤더 Apache-2.0. 고지: /usr/share/doc/ocl-icd-libopencl1/copyright. 소스: https://snapshot.debian.org/package/ocl-icd/2.3.3-1/
 
 
 5. 라이선스 파일이 휠에 없는 패키지(보충 고지)
