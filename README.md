@@ -18,7 +18,7 @@ docker compose -f compose.yaml -f compose.cuda.yaml up -d --build   # NVIDIA GPU
 docker compose -f compose.yaml -f compose.cuda.yaml -f compose.nemotron.yaml up -d --build   # GPU + NVIDIA Nemotron
 ```
 
-- 이미지 크기(이 PC 실측): CPU 824MB, CUDA 4.6GB(cuBLAS·cuDNN 포함), Nemotron 11.2GB(PyTorch CUDA 12.8·Transformers·librosa 추가). 기반은 `python:3.12-slim`입니다.
+- 이미지 크기(이 PC 실측): CPU 824MB, CUDA 4.6GB(cuBLAS·cuDNN 포함), Nemotron 12.4GB(PyTorch 2.14.1+cu130·Transformers 5.19·librosa 추가). 기반은 `python:3.12-slim`입니다.
 - Nemotron 프리셋은 PyTorch와 Transformers가 있을 때만 목록에 나타납니다. 기본 CPU·CUDA 이미지에서는 보이지 않습니다.
 - GPU는 NVIDIA 드라이버와 NVIDIA Container Toolkit(Windows는 Docker Desktop WSL2)이 필요합니다.
 - 받은 모델과 CUDA 첫 실행 캐시는 `models` 볼륨(`/cache`)에 남습니다. 컨테이너를 지워도 다시 받지 않습니다.
