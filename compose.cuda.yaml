@@ -1,0 +1,17 @@
+# NVIDIA GPU 변형. 호스트에 NVIDIA 드라이버와 NVIDIA Container Toolkit(Windows는 Docker Desktop WSL2)이 필요합니다.
+#   docker compose -f compose.yaml -f compose.cuda.yaml up -d --build
+services:
+  stt:
+    build:
+      args:
+        GPU: "1"
+    image: udally-stt:cuda
+    environment:
+      STT_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

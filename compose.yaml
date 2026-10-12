@@ -1,0 +1,20 @@
+# 기본(CPU):  docker compose up -d --build
+# GPU:        docker compose -f compose.yaml -f compose.cuda.yaml up -d --build
+# 모델은 기동 때 받지 않습니다. 유달리 설정 화면 [적용](POST /v1/models/{id})이 받기를 시작합니다.
+services:
+  stt:
+    build: .
+    image: udally-stt:cpu
+    restart: unless-stopped
+    ports:
+      - "${STT_BIND:-127.0.0.1}:${STT_PORT:-8000}:8000"
+    env_file:
+      - path: .env # STT_API_KEY 등. .env.example 참고
+        required: false
+    environment:
+      STT_PORT: "8000" # 컨테이너 안 포트는 고정(.env의 STT_PORT는 호스트 포트)
+    volumes:
+      - models:/cache # 받은 모델이 남는 곳(컨테이너를 지워도 유지)
+
+volumes:
+  models:
