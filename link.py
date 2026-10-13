@@ -492,6 +492,7 @@ def codex_bin() -> str | None:
     return env("LINK_CODEX_BIN") or shutil.which("codex")
 
 
+CODEX_POLICY = 2  # 유달리에 알리는 Codex 정책 판: 기능 허용 목록·검증 버전 목록·로그인 시도 구분을 안다
 codex_versions: set[str] | None = None  # 유달리가 heartbeat 응답으로 준 통과 버전 목록. 받기 전이면 None → 받지 않음
 _codex_seen: dict = {}  # 실행 파일 → (확인 시각, 버전, 기능 목록) — heartbeat마다 node를 띄우지 않게 잠시 기억
 _codex_said: set = set()  # 같은 경고를 heartbeat마다 되풀이하지 않는다
@@ -718,8 +719,9 @@ def parse_device_auth(text: str) -> dict | None:
 class CodexLogin:
     """웹에서 시작한 Codex 로그인·로그아웃 한 건(스레드 하나)."""
 
-    def __init__(self, login_id: int, action: str, token: str, url=None, sleep=time.sleep):
+    def __init__(self, login_id: int, action: str, token: str, url=None, sleep=time.sleep, attempt: str = ""):
         self.id, self.action, self.token, self.url, self.sleep = login_id, action, token, url, sleep
+        self.attempt = attempt  # 유달리가 시도마다 새로 주는 값 — 보고마다 실어 옛 시도의 보고와 구분한다
         self.cancel, self.done = threading.Event(), threading.Event()
 
     def run(self) -> None:
@@ -730,7 +732,8 @@ class CodexLogin:
 
     def report(self, body: dict) -> int:
         try:
-            return call("POST", f"/codex-login/{self.id}", body, token=self.token, url=self.url)[0]
+            return call("POST", f"/codex-login/{self.id}", {**body, "attempt": self.attempt}, token=self.token,
+                        url=self.url)[0]
         except Offline:
             return 0
 
@@ -865,7 +868,7 @@ class Agent:
         return {"version": server.VERSION, "job_id": self.job.job["id"] if self.job else None,
                 "concurrency": server.CONCURRENCY, "device": {**device_info(), "codex": codex_device()},
                 "models": server.models_data(),
-                "ai": 1, "codex": 1 if codex_ready() else 0,  # 유달리가 검증한 버전의 Codex CLI가 있을 때만 Codex 작업을 받는다
+                "ai": 1, "codex": 1 if codex_ready() else 0, "codex_policy": CODEX_POLICY,  # 유달리가 검증한 버전의 Codex CLI가 있을 때만 Codex 작업을 받는다
                 "ai_job_id": self.ai.job["id"] if self.ai else None}
 
     def handle(self, r: dict) -> None:
@@ -877,12 +880,14 @@ class Agent:
             if not (isinstance(req, dict) and isinstance(req.get("id"), int)):
                 continue
             # 유달리의 요청 행은 PC당 하나라 id가 늘 같다 — 같은 요청이 아직 도는 중일 때만 건너뛴다(heartbeat 반복).
+            attempt = str(req.get("attempt") or "")[:32]
             cur = self.codex_login
-            if cur and not cur.done.is_set() and cur.id == req["id"] and cur.action == action:
+            if cur and not cur.done.is_set() and (cur.id, cur.action, cur.attempt) == (req["id"], action, attempt):
                 continue
             if cur:
                 cur.cancel.set()
-            self.codex_login = CodexLogin(req["id"], action, self.link["token"], url=self.link.get("url"))
+            self.codex_login = CodexLogin(req["id"], action, self.link["token"], url=self.link.get("url"),
+                                          attempt=attempt)
             threading.Thread(target=self.codex_login.run, daemon=True).start()
         if r.get("pull"):
             try:

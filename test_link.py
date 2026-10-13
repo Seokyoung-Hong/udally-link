@@ -449,26 +449,27 @@ assert a.beat()["device"]["codex"]["installed"] is True
 lg = []
 core.codex_login = lambda b: (lg.append(b), (200, {"state": "code"}))[1]
 set_mode("devauth")
-cl = link.CodexLogin(5, "login", "t", url=core.url)
+cl = link.CodexLogin(5, "login", "t", url=core.url, attempt="a5")
 th = threading.Thread(target=cl.go)
 th.start()
 for _ in range(200):
     if lg:
         break
     time.sleep(0.05)
-assert lg[0] == {"url": "https://auth.openai.com/codex/device", "code": "WXYZ-12345", "expires_in": 900}, lg
+assert lg[0] == {"url": "https://auth.openai.com/codex/device", "code": "WXYZ-12345", "expires_in": 900,
+                 "attempt": "a5"}, lg  # 보고마다 시도 값
 assert [c[0] for c in core.calls if "/codex-login/" in c[0]][-1].endswith("/codex-login/5")
 (fake / "approved.txt").write_text("1")
 th.join(30)
-assert lg[-1] == {"done": True, "logged_in": True}, lg
+assert lg[-1] == {"done": True, "logged_in": True, "attempt": "a5"}, lg
 assert a.beat()["device"]["codex"]["login"] is True  # 끝나면 로그인 상태를 새로 읽는다
 link.CodexLogin(6, "logout", "t", url=core.url).go()
-assert lg[-1] == {"done": True, "logged_in": False}
+assert lg[-1] == {"done": True, "logged_in": False, "attempt": ""}
 (fake / "approved.txt").unlink()
 set_mode("evilurl")  # 예상 밖 주소면 코드를 보내지 않고 실패
 n = len(lg)
 link.CodexLogin(7, "login", "t", url=core.url).go()
-assert lg[n:] == [{"error": "bad_login_url"}], lg[n:]
+assert lg[n:] == [{"error": "bad_login_url", "attempt": ""}], lg[n:]
 set_mode("devauth")  # 유달리가 만료·취소로 409 → 프로세스를 바로 끈다
 core.codex_login = lambda b: (lg.append(b), (409, {}))[1]
 n, t0 = len(lg), time.monotonic()
@@ -480,16 +481,24 @@ link.log.removeHandler(_cap)
 # 끝난 뒤에는 같은 id(유달리 행은 PC당 하나)라도 다시 시작한다: login 5 → logout 5 → login 5 = 세 번
 started, gate = [], threading.Event()
 _go = link.CodexLogin.go
-link.CodexLogin.go = lambda self: (started.append((self.id, self.action)), gate.wait(5))
-a.handle({"codex_login": {"id": 5}})
-a.handle({"codex_login": {"id": 5}})  # 도는 중 반복 → 무시
+link.CodexLogin.go = lambda self: (started.append((self.id, self.action, self.attempt)), gate.wait(5))
+a.handle({"codex_login": {"id": 5, "attempt": "x1"}})
+a.handle({"codex_login": {"id": 5, "attempt": "x1"}})  # 도는 중 반복 → 무시
 gate.set()
 a.codex_login.done.wait(5)
-a.handle({"codex_logout": {"id": 5}})
+a.handle({"codex_logout": {"id": 5, "attempt": "x2"}})
 a.codex_login.done.wait(5)
-a.handle({"codex_login": {"id": 5}})
+a.handle({"codex_login": {"id": 5, "attempt": "x3"}})
 a.codex_login.done.wait(5)
-assert started == [(5, "login"), (5, "logout"), (5, "login")], started
+assert started == [(5, "login", "x1"), (5, "logout", "x2"), (5, "login", "x3")], started
+gate.clear()
+a.handle({"codex_login": {"id": 5, "attempt": "x4"}})
+old = a.codex_login
+a.handle({"codex_login": {"id": 5, "attempt": "x5"}})  # 도는 중 같은 동작이라도 새 시도면 옛것을 끄고 새로
+assert a.codex_login is not old and old.cancel.is_set() and a.codex_login.attempt == "x5"
+gate.set()
+a.codex_login.done.wait(5)
+assert a.beat()["codex_policy"] == 2  # 유달리는 이 정책 판을 아는 link에만 Codex 작업·로그인 명령을 준다
 gate.clear()
 a.handle({"codex_login": {"id": 9}})
 first = a.codex_login
@@ -501,7 +510,7 @@ time.sleep(1)
 _docker, link.IN_DOCKER = link.IN_DOCKER, True  # Docker 설치는 Codex 불가
 assert link.codex_device() == {"docker": True}
 link.CodexLogin(11, "login", "t", url=core.url).go()
-assert lg[-1] == {"error": "codex_docker"}
+assert lg[-1] == {"error": "codex_docker", "attempt": ""}
 link.IN_DOCKER = _docker
 set_mode("ok")
 # 시간 상한·취소: 프로세스를 끈다
