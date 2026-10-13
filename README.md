@@ -53,7 +53,7 @@ docker compose -f compose.yaml -f compose.link.yaml up -d   # GPU면 compose.cud
   - 부를 수 있는 주소는 루프백(`localhost`·`127.0.0.1`·`::1`)과 `host.docker.internal`뿐입니다. 같은 LAN의 다른 기기는 `UDALLY_AI_HOSTS=192.168.0.5,gpu.lan`처럼 직접 적은 호스트만 허용합니다. 리다이렉트는 따르지 않고 프록시를 쓰지 않습니다.
   - Docker 안에서는 `localhost`·`127.0.0.1`을 `host.docker.internal`로 바꿔 부릅니다(`compose.link.yaml`의 `extra_hosts`). `docker run`이면 `--add-host host.docker.internal:host-gateway`를 붙여 주세요.
   - 키·메시지·결과는 로그에 남기지 않습니다.
-- **Codex(내 구독)**: 유달리 설정에서 개인 AI 종류를 "Codex(내 구독, 내 PC)"로 고르면, 이 PC에 설치·로그인된 [Codex CLI](https://github.com/openai/codex)를 비대화로 실행합니다(`codex exec --sandbox read-only --skip-git-repo-check --ephemeral --ignore-user-config`, 승인 없음, 빈 임시 폴더, 마지막 메시지만 결과). 구독 토큰은 읽지도 유달리로 보내지도 않습니다. 시간 상한·취소 때 프로세스를 끕니다. Codex가 없으면 `codex_missing`, 로그인이 안 됐으면 `codex_auth`로 실패해 다음 AI로 넘어갑니다. 실행 파일 위치는 `LINK_CODEX_BIN`으로 바꿀 수 있습니다. 쓰는 만큼 내 Codex 사용량이 줄어듭니다.
+- **Codex(내 구독)**: 유달리 설정에서 개인 AI 종류를 "Codex(내 구독, 내 PC)"로 고르면, 이 PC에 설치·로그인된 [Codex CLI](https://github.com/openai/codex)를 비대화로 실행합니다(`codex exec --sandbox read-only --skip-git-repo-check --ephemeral --ignore-user-config --json`, 승인 없음, 빈 임시 폴더, 마지막 메시지만 결과). 명령 실행·웹 검색·브라우저·플러그인 등 도구 기능은 끄고(`--disable`), 그래도 도구 호출 사건이 보이면 바로 프로세스를 끄고 결과를 버립니다. Codex에는 실행·로그인 위치·프록시에 필요한 환경변수만 넘깁니다. 구독 토큰은 읽지도 유달리로 보내지도 않습니다. 시간 상한·취소 때 프로세스를 끕니다. Codex가 없으면 `codex_missing`, 로그인이 안 됐으면 `codex_auth`로 실패해 다음 AI로 넘어갑니다. 실행 파일 위치는 `LINK_CODEX_BIN`으로 바꿀 수 있습니다. 쓰는 만큼 내 Codex 사용량이 줄어듭니다.
 
 ### 옛 이름(udally-stt)에서 옮기기
 
