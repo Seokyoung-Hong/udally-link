@@ -54,6 +54,7 @@ class Core:
     def __init__(self):
         self.calls, self.patches, self.patch_paths, self.token_polls = [], [], [], 0
         self.ai_report = lambda body: (200, {"status": body["status"]})
+        self.codex_login = lambda body: (200, {"state": "code"})
         self.heartbeat = lambda body: (200, {"poll_s": 5, "pull": None, "job": None})
         self.progress = lambda body: (200, {"status": "running", "cancel": False})
         self.track = tmp / "track.wav"
@@ -87,6 +88,8 @@ class Core:
                     return self.reply(200, {"access_token": "udl_secret_token_value", "server_id": 9, "name": "내 PC"})
                 if self.path.endswith("/heartbeat"):
                     return self.reply(*core.heartbeat(b))
+                if "/codex-login/" in self.path:
+                    return self.reply(*core.codex_login(b))
                 self.reply(404)
 
             def do_PATCH(self):
@@ -328,8 +331,22 @@ if sys.argv[1:3] == ["features", "list"]:
           "code_mode_host            stable             true\nsecret_auth_storage       stable             true\n"
           "sqlite                    removed            true\nmemories                  under development  false\n" + feats)
     sys.exit(0)
+if sys.argv[1:3] == ["login", "--device-auth"]:  # 실제 0.161.0 출력 모양(ANSI 색 포함)
+    url = "https://evil.example/codex/device" if mode == "evilurl" else "https://auth.openai.com/codex/device"
+    print("Welcome to Codex [v\x1b[90m0.161.0\x1b[0m]\n\n1. Open this link in your browser and sign in to your account\n"
+          "   \x1b[94m" + url + "\x1b[0m\n\n2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\n"
+          "   \x1b[94mWXYZ-12345\x1b[0m\n", flush=True)
+    for _ in range(300):
+        if (here / "approved.txt").exists():
+            (here / "loggedin.txt").write_text("1")
+            sys.exit(0)
+        time.sleep(0.1)
+    sys.exit(1)
+if sys.argv[1:2] == ["logout"]:
+    (here / "loggedin.txt").unlink(missing_ok=True)
+    sys.exit(0)
 if sys.argv[1:3] == ["login", "status"]:
-    sys.exit(1 if mode == "unauth" else 0)
+    sys.exit(1 if mode == "unauth" or (mode in ("devauth", "evilurl") and not (here / "loggedin.txt").exists()) else 0)
 prompt = sys.stdin.buffer.read().decode("utf-8")
 log.write_text(json.dumps({"argv": sys.argv[1:], "prompt": prompt, "cwd": os.getcwd(),
                            "env": sorted(os.environ)}), encoding="utf-8")
@@ -421,6 +438,59 @@ assert link.AiJob(cj, "t", url=core.url).go(no_sleep) == "done" and a.beat()["co
 a.handle({"codex_versions": []})
 assert a.beat()["codex"] == 0
 link.codex_versions = {"0.162.1"}
+# ---------- Codex 로그인(웹에서 시작, 기기 코드): 주소·코드만 보고, 코드는 로그에 남기지 않는다 ----------
+import logging as _logging  # noqa: E402
+_seen_logs = []
+_cap = _logging.Handler()
+_cap.emit = lambda rec: _seen_logs.append(rec.getMessage())
+link.log.addHandler(_cap)
+assert link.parse_device_auth("코드 없음 https://auth.openai.com/codex/device") is None
+assert a.beat()["device"]["codex"]["installed"] is True
+lg = []
+core.codex_login = lambda b: (lg.append(b), (200, {"state": "code"}))[1]
+set_mode("devauth")
+cl = link.CodexLogin(5, "login", "t", url=core.url)
+th = threading.Thread(target=cl.go)
+th.start()
+for _ in range(200):
+    if lg:
+        break
+    time.sleep(0.05)
+assert lg[0] == {"url": "https://auth.openai.com/codex/device", "code": "WXYZ-12345", "expires_in": 900}, lg
+assert [c[0] for c in core.calls if "/codex-login/" in c[0]][-1].endswith("/codex-login/5")
+(fake / "approved.txt").write_text("1")
+th.join(30)
+assert lg[-1] == {"done": True, "logged_in": True}, lg
+assert a.beat()["device"]["codex"]["login"] is True  # 끝나면 로그인 상태를 새로 읽는다
+link.CodexLogin(6, "logout", "t", url=core.url).go()
+assert lg[-1] == {"done": True, "logged_in": False}
+(fake / "approved.txt").unlink()
+set_mode("evilurl")  # 예상 밖 주소면 코드를 보내지 않고 실패
+n = len(lg)
+link.CodexLogin(7, "login", "t", url=core.url).go()
+assert lg[n:] == [{"error": "bad_login_url"}], lg[n:]
+set_mode("devauth")  # 유달리가 만료·취소로 409 → 프로세스를 바로 끈다
+core.codex_login = lambda b: (lg.append(b), (409, {}))[1]
+n, t0 = len(lg), time.monotonic()
+link.CodexLogin(8, "login", "t", url=core.url).go()
+assert len(lg) == n + 1 and time.monotonic() - t0 < 20
+assert not any("WXYZ" in m for m in _seen_logs)
+link.log.removeHandler(_cap)
+# heartbeat 응답 codex_login → 스레드 하나(같은 id는 다시 시작하지 않음)
+core.codex_login = lambda b: (lg.append(b), (409, {}))[1]
+a.handle({"codex_login": {"id": 9}})
+first = a.codex_login
+a.handle({"codex_login": {"id": 9}})
+assert a.codex_login is first and first.id == 9 and first.action == "login"
+a.handle({"codex_logout": {"id": 10}})
+assert a.codex_login.id == 10 and a.codex_login.action == "logout" and first.cancel.is_set()
+time.sleep(1)
+_docker, link.IN_DOCKER = link.IN_DOCKER, True  # Docker 설치는 Codex 불가
+assert link.codex_device() == {"docker": True}
+link.CodexLogin(11, "login", "t", url=core.url).go()
+assert lg[-1] == {"error": "codex_docker"}
+link.IN_DOCKER = _docker
+set_mode("ok")
 # 시간 상한·취소: 프로세스를 끈다
 set_mode("slow")
 t0 = time.monotonic()

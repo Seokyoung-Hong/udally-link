@@ -668,6 +668,116 @@ def codex_ask(job: dict, cancel: threading.Event) -> str:
     return text
 
 
+# ---------- Codex 로그인(웹에서 시작, 기기 코드) ----------
+# 유달리 화면의 [Codex 로그인] → heartbeat 응답 codex_login {id} → `codex login --device-auth`의 출력에서 인증 주소·
+# 사용자 코드만 골라 보고 → 사용자가 자기 브라우저에서 입력 → 끝나면 로그인 여부만 보고. 토큰·auth.json은 읽지도
+# 보내지도 않고, 코드는 로그에 남기지 않는다.
+IN_DOCKER = Path("/.dockerenv").exists()  # 컨테이너엔 Codex CLI·로그인이 없다 — Codex는 uv 설치에서만
+CODEX_LOGIN_HOSTS = ("auth.openai.com",)
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_codex_login_seen: dict = {}  # 실행 파일 → (확인 시각, 로그인 여부)
+
+
+def codex_logged_in(exe: str, fresh: bool = False) -> bool | None:
+    at, v = _codex_login_seen.get(exe, (None, None))
+    if fresh or at is None or time.monotonic() - at > 600:
+        try:
+            r = subprocess.run([exe, "login", "status"], capture_output=True, stdin=subprocess.DEVNULL, timeout=30,
+                               env=_codex_env())
+            v = r.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            v = None
+        _codex_login_seen[exe] = (time.monotonic(), v)
+    return v
+
+
+def codex_device() -> dict:
+    """heartbeat device에 싣는 Codex 상태(유달리 화면의 로그인 표시·Docker 안내용). 계정 정보는 넣지 않는다."""
+    if IN_DOCKER:
+        return {"docker": True}
+    exe = codex_bin()
+    if not exe:
+        return {"installed": False}
+    seen = _codex_seen.get(exe)
+    return {"installed": True, "version": seen[1] if seen else "", "login": codex_logged_in(exe)}
+
+
+def parse_device_auth(text: str) -> dict | None:
+    """`codex login --device-auth` 출력 → {url, code, expires_in}. 주소가 OpenAI 인증 도메인이 아니면 url=""."""
+    t = ANSI.sub("", text)
+    u = re.search(r"https://[^\s]+", t)
+    c = re.search(r"^\s*([A-Z0-9]{4,8}-[A-Z0-9]{4,8})\s*$", t, re.M)
+    if not (u and c):
+        return None
+    host = urllib.parse.urlsplit(u.group(0)).hostname
+    m = re.search(r"expires in (\d+) minute", t)
+    return {"url": u.group(0) if host in CODEX_LOGIN_HOSTS else "", "code": c.group(1),
+            "expires_in": int(m.group(1)) * 60 if m else 900}
+
+
+class CodexLogin:
+    """웹에서 시작한 Codex 로그인·로그아웃 한 건(스레드 하나)."""
+
+    def __init__(self, login_id: int, action: str, token: str, url=None, sleep=time.sleep):
+        self.id, self.action, self.token, self.url, self.sleep = login_id, action, token, url, sleep
+        self.cancel = threading.Event()
+
+    def report(self, body: dict) -> int:
+        try:
+            return call("POST", f"/codex-login/{self.id}", body, token=self.token, url=self.url)[0]
+        except Offline:
+            return 0
+
+    def go(self) -> None:
+        exe = codex_bin()
+        if IN_DOCKER or not exe:
+            self.report({"error": "codex_docker" if IN_DOCKER else "codex_missing"})
+            return
+        if self.action == "logout":
+            with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+                subprocess.run([exe, "logout"], capture_output=True, stdin=subprocess.DEVNULL, timeout=60,
+                               env=_codex_env())
+            self.report({"done": True, "logged_in": bool(codex_logged_in(exe, fresh=True))})
+            return
+        try:
+            p = subprocess.Popen([exe, "login", "--device-auth"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, env=_codex_env(), start_new_session=sys.platform != "win32")
+        except OSError:
+            self.report({"error": "codex_missing"})
+            return
+        buf, info, got = [], {}, threading.Event()
+
+        def read():
+            for line in p.stdout:
+                buf.append(line.decode("utf-8", "replace"))
+                if not got.is_set() and (i := parse_device_auth("".join(buf))):
+                    info.update(i)
+                    got.set()
+
+        threading.Thread(target=read, daemon=True).start()
+        until = time.monotonic() + 60
+        while not got.is_set() and p.poll() is None and time.monotonic() < until and not self.cancel.is_set():
+            self.sleep(0.2)
+        got.wait(timeout=1)
+        try:
+            if not got.is_set() or not info["url"]:
+                self.report({"error": "bad_login_url" if got.is_set() else "login_failed"})
+                return
+            if self.report(info) != 200:  # 만료·취소된 요청
+                return
+            log.info("Codex 로그인 코드를 유달리에 보였습니다(요청 %s)", self.id)
+            until = time.monotonic() + info["expires_in"] + 30
+            while p.poll() is None and time.monotonic() < until and not self.cancel.is_set():
+                self.sleep(1)
+            ok = p.poll() == 0 and codex_logged_in(exe, fresh=True)
+            if not self.cancel.is_set():
+                self.report({"done": True, "logged_in": True} if ok else {"error": "login_failed"})
+        finally:
+            if p.poll() is None:
+                _kill_tree(p)
+            codex_logged_in(exe, fresh=True)  # 다음 heartbeat에 새 로그인 상태
+
+
 class AiJob:
     """AI 작업 하나(전사와 따로 도는 스레드, 한 번에 하나). 키·메시지·결과는 로그에 남기지 않는다."""
 
@@ -742,11 +852,13 @@ class Agent:
         self.link, self.sleep, self.run = link, sleep, run
         self.job: Job | None = None
         self.ai: AiJob | None = None
+        self.codex_login: CodexLogin | None = None
         self.fails, self.wait = 0, 5.0
 
     def beat(self) -> dict:
         return {"version": server.VERSION, "job_id": self.job.job["id"] if self.job else None,
-                "concurrency": server.CONCURRENCY, "device": device_info(), "models": server.models_data(),
+                "concurrency": server.CONCURRENCY, "device": {**device_info(), "codex": codex_device()},
+                "models": server.models_data(),
                 "ai": 1, "codex": 1 if codex_ready() else 0,  # 유달리가 검증한 버전의 Codex CLI가 있을 때만 Codex 작업을 받는다
                 "ai_job_id": self.ai.job["id"] if self.ai else None}
 
@@ -754,6 +866,14 @@ class Agent:
         global codex_versions
         if isinstance(r.get("codex_versions"), list):
             codex_versions = {str(v) for v in r["codex_versions"]}
+        for action in ("login", "logout"):  # 웹에서 시작한 Codex 로그인·로그아웃(한 번에 하나, 새 요청이 옛것을 끈다)
+            req = r.get(f"codex_{action}")
+            if (isinstance(req, dict) and isinstance(req.get("id"), int)
+                    and not (self.codex_login and self.codex_login.id == req["id"])):
+                if self.codex_login:
+                    self.codex_login.cancel.set()
+                self.codex_login = CodexLogin(req["id"], action, self.link["token"], url=self.link.get("url"))
+                threading.Thread(target=self.codex_login.go, daemon=True).start()
         if r.get("pull"):
             try:
                 server.pull(r["pull"])
