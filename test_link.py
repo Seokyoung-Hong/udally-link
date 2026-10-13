@@ -359,6 +359,12 @@ assert core.patches[-1]["error"] == "model_not_found"
 os.environ["LINK_CODEX_BIN"] = str(fake / "nope")
 assert link.AiJob(cj, "t", url=core.url).go(no_sleep) == "failed" and core.patches[-1]["error"] == "codex_missing"
 os.environ["LINK_CODEX_BIN"] = str(fake / ("codex.bat" if _sys.platform == "win32" else "codex"))
+assert a.beat()["codex"] == 1  # Codex CLI가 있으면 heartbeat에 능력 표시
+_which, link.shutil.which = link.shutil.which, lambda n: None
+os.environ["LINK_CODEX_BIN"] = ""
+assert a.beat()["codex"] == 0
+link.shutil.which = _which
+os.environ["LINK_CODEX_BIN"] = str(fake / ("codex.bat" if _sys.platform == "win32" else "codex"))
 # 시간 상한·취소: 프로세스를 끈다
 os.environ["FAKE_CODEX"] = "slow"
 t0 = time.monotonic()

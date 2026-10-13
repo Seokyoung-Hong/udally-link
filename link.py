@@ -614,7 +614,8 @@ class Agent:
     def beat(self) -> dict:
         return {"version": server.VERSION, "job_id": self.job.job["id"] if self.job else None,
                 "concurrency": server.CONCURRENCY, "device": device_info(), "models": server.models_data(),
-                "ai": 1, "ai_job_id": self.ai.job["id"] if self.ai else None}
+                "ai": 1, "codex": 1 if codex_bin() else 0,  # Codex CLI가 있을 때만 Codex 작업을 받는다
+                "ai_job_id": self.ai.job["id"] if self.ai else None}
 
     def handle(self, r: dict) -> None:
         if r.get("pull"):
