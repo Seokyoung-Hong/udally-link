@@ -62,7 +62,13 @@ CPU_FALLBACK = env("LINK_CPU_FALLBACK", "1") == "1"
 CONCURRENCY = int(env("LINK_CONCURRENCY", "3"))
 GPU_CTS = backends.CT2.gpu_cts
 log = logging.getLogger("udally-link")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+_handlers = [logging.StreamHandler()]
+if _log_file := env("LINK_LOG_FILE"):  # 창 없이 띄울 때(Windows 시작프로그램) 로그를 볼 곳. 5MB×2개로 돌린다
+    from logging.handlers import RotatingFileHandler
+
+    os.makedirs(os.path.dirname(_log_file) or ".", exist_ok=True)
+    _handlers.append(RotatingFileHandler(_log_file, maxBytes=5_000_000, backupCount=1, encoding="utf-8"))
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=_handlers)
 
 
 def runtime(model_id: str):

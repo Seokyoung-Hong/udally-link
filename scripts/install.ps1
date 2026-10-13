@@ -154,16 +154,22 @@ function UvInstall($kind) {
   $env:UDALLY_URL = $UdallyUrl
   $exe = Join-Path $bin 'udally-link.exe'
   if ((Run $exe @('connect', '--until-linked')) -ne 0) { throw '연결하지 못했습니다.' }
-  # 자동 시작: 시작프로그램 폴더 바로가기(최소화 창). 관리자 권한 불필요.
+  # 자동 시작: 시작프로그램 폴더 바로가기. 관리자 권한 불필요.
+  # 콘솔 창을 띄우지 않는다: conhost --headless(Windows 10 1809+)로 실행하고 로그는 파일(LINK_LOG_FILE)로 남긴다.
   $lnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'udally-link.lnk'
-  if ($Dry) { Say "[dry-run] shortcut $lnk -> $exe connect" }
+  $conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
+  $logFile = Join-Path $env:LOCALAPPDATA 'udally-link\link.log'
+  $runArgs = "--headless `"$exe`" connect"
+  if ($Dry) { Say "[dry-run] shortcut $lnk -> $conhost $runArgs (log $logFile)" }
   else {
     $s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
-    $s.TargetPath = $exe; $s.Arguments = 'connect'; $s.WindowStyle = 7; $s.Save()
+    $s.TargetPath = $conhost; $s.Arguments = $runArgs; $s.WindowStyle = 7; $s.Save()
     [Environment]::SetEnvironmentVariable('UDALLY_URL', $UdallyUrl, 'User')
+    [Environment]::SetEnvironmentVariable('LINK_LOG_FILE', $logFile, 'User'); $env:LINK_LOG_FILE = $logFile
     Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | Stop-Process -Force
-    Start-Process $exe -ArgumentList 'connect' -WindowStyle Minimized
+    Start-Process $conhost -ArgumentList $runArgs -WindowStyle Hidden
   }
+  Say "로그는 $logFile 에 남습니다."
   Say '로그인할 때 자동으로 켜집니다(시작프로그램).'
 }
 
