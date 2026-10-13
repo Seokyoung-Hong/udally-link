@@ -1,4 +1,4 @@
-udally-stt — THIRD PARTY NOTICES (제3자 구성요소 고지)
+udally-link — THIRD PARTY NOTICES (제3자 구성요소 고지)
 =====================================================
 
 이 저장소의 코드(server.py, link.py, backends.py, scripts/, Dockerfile, compose*.yaml, 문서)는
@@ -57,7 +57,7 @@ cuBLAS·cuBLASLt(nvidia-cublas-cu12), NVRTC(nvidia-cuda-nvrtc-cu12), cuDNN(nvidi
 - NVIDIA CUDA Toolkit EULA(부속서 A 재배포 가능 목록) 및 cuDNN·cuSPARSELt 소프트웨어 라이선스 계약과 보충서가 적용됩니다.
   전문: 각 휠의 /usr/local/lib/python3.12/site-packages/nvidia_*.dist-info/licenses/License.txt
   (cuSPARSELt: site-packages/nvidia/cusparselt/LICENSE.txt). https://docs.nvidia.com/cuda/eula/index.html
-- NVIDIA 구성요소는 PolyForm Noncommercial이 아니라 NVIDIA의 약관을 따릅니다. 이 애플리케이션(udally-stt)과 함께,
+- NVIDIA 구성요소는 PolyForm Noncommercial이 아니라 NVIDIA의 약관을 따릅니다. 이 애플리케이션(udally-link)과 함께,
   이 애플리케이션을 통해서만 쓰도록 배포됩니다. 이미지에서 따로 꺼내 다른 용도로 쓰거나 재배포하지 마세요.
   NVIDIA 약관이 허용하는 범위를 넘어 역공학·역컴파일·역어셈블할 수 없습니다.
 - 빼낸 것: nemotron 빌드에서 triton(ptxas·cuobjdump·nvdisasm 등 NVIDIA 개발 도구 동봉 — 재배포 목록에 없음)을 설치 뒤 제거합니다.

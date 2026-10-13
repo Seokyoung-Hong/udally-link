@@ -1,5 +1,5 @@
 [project]
-name = "udally-stt"
+name = "udally-link"
 version = "0.1.0"
 description = "유달리용 로컬 전사 서버(OpenAI 호환 + 유달리 연결)"
 readme = "README.md"
@@ -24,7 +24,7 @@ openvino = ["openvino-genai>=2026.4,<2027"]
 nemotron = ["torch==2.11.0", "transformers>=5.13", "librosa"]
 
 [project.scripts]
-udally-stt = "server:cli"
+udally-link = "server:cli"
 
 [build-system]
 requires = ["setuptools>=69"]

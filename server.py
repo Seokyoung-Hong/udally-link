@@ -43,25 +43,25 @@ import backends
 from backends import NEMOTRON, OOM
 
 VERSION = "0.1.0"
-env = os.environ.get
-# Nemotron은 PyTorch·Transformers가 있는 이미지(udally-stt:nemotron)에서만 목록에 넣는다.
+env = backends.env
+# Nemotron은 PyTorch·Transformers가 있는 이미지(udally-link:nemotron)에서만 목록에 넣는다.
 HAS_TORCH = backends.has("torch", "transformers")
-DEVICE = env("STT_DEVICE", "auto")  # auto | cuda | rocm | openvino | cpu
+DEVICE = env("LINK_DEVICE", "auto")  # auto | cuda | rocm | openvino | cpu
 BACKEND = backends.pick(DEVICE)  # Whisper 프리셋을 돌릴 실행부
 if BACKEND.name == "rocm":
-    backends.ensure_rocm(env("HF_HOME") or str(Path.home() / ".cache" / "udally-stt"))
+    backends.ensure_rocm(env("HF_HOME") or str(Path.home() / ".cache" / "udally-link"))
 TORCH = backends.Torch()
 PRESETS = [m for m in (x.strip() for x in env(
-    "STT_MODELS",
+    "LINK_MODELS",
     "Systran/faster-whisper-small,Systran/faster-whisper-medium,"
     f"deepdml/faster-whisper-large-v3-turbo-ct2,Systran/faster-whisper-large-v3,{NEMOTRON}",
 ).split(",")) if m and (TORCH.supports(m) and HAS_TORCH and BACKEND.name in ("cuda", "cpu") or BACKEND.supports(m))]
-API_KEY = env("STT_API_KEY") or None
-FORCED_CT = env("STT_COMPUTE_TYPE") or None
-CPU_FALLBACK = env("STT_CPU_FALLBACK", "1") == "1"
-CONCURRENCY = int(env("STT_CONCURRENCY", "3"))
+API_KEY = env("LINK_API_KEY") or None
+FORCED_CT = env("LINK_COMPUTE_TYPE") or None
+CPU_FALLBACK = env("LINK_CPU_FALLBACK", "1") == "1"
+CONCURRENCY = int(env("LINK_CONCURRENCY", "3"))
 GPU_CTS = backends.CT2.gpu_cts
-log = logging.getLogger("udally-stt")
+log = logging.getLogger("udally-link")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
@@ -407,7 +407,7 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(title="udally-stt", dependencies=[Depends(auth)], lifespan=lifespan)
+app = FastAPI(title="udally-link", dependencies=[Depends(auth)], lifespan=lifespan)
 
 
 @app.get("/v1/models")
@@ -460,13 +460,13 @@ async def transcribe(
 
 
 def cli(argv=None) -> None:
-    """udally-stt (HTTP 서버) · udally-stt connect [--until-linked] (유달리 연결) · udally-stt unlink (스스로 끊기)."""
+    """udally-link (HTTP 서버) · udally-link connect [--until-linked] (유달리 연결) · udally-link unlink (스스로 끊기)."""
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] in (["connect"], ["unlink"]):
         import link
         sys.exit(link.main(argv[1:] if argv[0] == "connect" else ["unlink"]))
     import uvicorn
-    uvicorn.run(app, host=env("STT_HOST", "127.0.0.1"), port=int(env("STT_PORT", "8000")))
+    uvicorn.run(app, host=env("LINK_HOST", "127.0.0.1"), port=int(env("LINK_PORT", "8000")))
 
 
 if __name__ == "__main__":

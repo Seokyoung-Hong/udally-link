@@ -15,13 +15,31 @@ from pathlib import Path
 import numpy
 
 tmp = Path(tempfile.mkdtemp())
-os.environ.update(STT_DEVICE="cpu", STT_LINK_FILE=str(tmp / "link.json"), UDALLY_URL="http://127.0.0.1:1")
+os.environ.update(STT_DEVICE="cpu", STT_LINK_FILE=str(tmp / "link.json"), UDALLY_URL="http://127.0.0.1:1")  # 옛 이름도 읽는다
 
 import link  # noqa: E402
 import server  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 SR = 16000
+
+# 환경변수: 새 LINK_* 우선, 옛 STT_*(STT_LINK_FILE) 계속
+assert link.link_file() == tmp / "link.json" and server.DEVICE == "cpu"
+os.environ["LINK_NAME"], os.environ["STT_NAME"] = "새", "옛"
+assert link.env("LINK_NAME") == "새"
+del os.environ["LINK_NAME"]
+assert link.env("LINK_NAME") == "옛" and link.env("LINK_NONE", "d") == "d"
+del os.environ["STT_NAME"]
+# udally-stt 시절 토큰 파일은 새 위치로 옮겨 쓴다(다시 연결하지 않게)
+home = Path(tempfile.mkdtemp())
+saved = {k: os.environ.pop(k) for k in ("STT_LINK_FILE",)}
+os.environ["APPDATA" if link.sys.platform == "win32" else "HOME"] = str(home)
+base = home if link.sys.platform == "win32" else home / ".config"
+(base / "udally-stt").mkdir(parents=True)
+(base / "udally-stt" / "link.json").write_text('{"token": "t"}', encoding="utf-8")
+assert link.load_link() == {"token": "t"} and (base / "udally-link" / "link.json").exists()
+assert not (base / "udally-stt" / "link.json").exists()
+os.environ.update(saved)
 
 
 def tone_wav(path: Path, seconds: float) -> None:
@@ -152,7 +170,7 @@ assert final["status"] == "done" and final["segments_total"] == 3 and final["seg
 assert [r["seq"] for r in final["rows"]] == [1, 2, 3]
 assert final["rows"][1] == {"seq": 2, "user_id": "123", "start_ms": 2000, "failed": True}
 assert final["rows"][0]["text"] == "2000ms" and "text" not in final["rows"][1]
-assert not any(Path(tempfile.gettempdir()).glob("udally-stt-*/track-123.ogg"))  # 임시 파일 정리
+assert not any(Path(tempfile.gettempdir()).glob("udally-link-*/track-123.ogg"))  # 임시 파일 정리
 
 # 모델이 준비되지 않았으면 바로 failed(model_not_ready)
 assert link.Job({**job, "model": "nope"}, "t", url=core.url).go(no_sleep) == "failed"

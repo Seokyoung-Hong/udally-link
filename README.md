@@ -1,4 +1,4 @@
-# udally-stt
+# udally-link
 
 유달리(Discord 회의 녹음)가 쓰는 **로컬 음성 전사 서버**입니다. 회의 음성을 내 PC·조직 서버에서 전사하므로 외부 전사 서비스로 보내지 않습니다.
 
@@ -8,42 +8,44 @@
 - 이 저장소가 직접 짠 것: `server.py`(HTTP 규약, 모델 상태·받기, 메모리 계획, OOM 강등, 취소), `link.py`(유달리 연결), `backends.py`(장치별 실행부), `scripts/`(설치·제거).
 - **라이선스: PolyForm Noncommercial 1.0.0(비상업, 소스 공개)** — 10절. 의존성·NVIDIA 구성요소·모델은 각자 라이선스입니다.
 
+> **이름이 바뀌었습니다: udally-stt → udally-link** (전사에 더해 AI 자동완성 거쳐 보내기까지 맡습니다). 옛 설치는 0절 "옛 이름(udally-stt)에서 옮기기"를 보세요.
+
 ## 0. 내 PC를 유달리 전사 서버로 연결하기
 
 | OS | 설치·업데이트(같은 명령) | 제거 |
 |---|---|---|
-| Windows (PowerShell 5.1·7) | `irm https://udally.sio2.kr/stt/install.ps1 \| iex` | `irm https://udally.sio2.kr/stt/uninstall.ps1 \| iex` |
-| macOS · Linux | `curl -fsSL https://udally.sio2.kr/stt/install.sh \| sh` | `curl -fsSL https://udally.sio2.kr/stt/uninstall.sh \| sh` |
+| Windows (PowerShell 5.1·7) | `irm https://udally.sio2.kr/link/install.ps1 \| iex` | `irm https://udally.sio2.kr/link/uninstall.ps1 \| iex` |
+| macOS · Linux | `curl -fsSL https://udally.sio2.kr/link/install.sh \| sh` | `curl -fsSL https://udally.sio2.kr/link/uninstall.sh \| sh` |
 
 - 실행 전에 내용을 보고 싶으면 위 주소를 브라우저로 여세요(유달리가 이 저장소의 고정 커밋 `scripts/` 원본으로 보냅니다).
 - 스크립트는 관리자 권한(sudo·UAC)을 요구하지 않고, 사람 입력을 받지 않으며, 토큰을 출력하지 않습니다.
 - 화면에 나온 주소(`https://udally.sio2.kr/link`)를 직접 열고 **PC 화면의 코드를 손으로 입력**한 뒤 [허용]합니다. 코드가 든 링크를 남에게 받았다면 누르지 마세요.
-- **Docker가 있으면** GHCR 이미지(digest 고정)를 받아 `udally-stt` 컨테이너(`--restart unless-stopped`, 볼륨 `udally-stt:/cache`)로 띄웁니다. 토큰은 볼륨에 남으므로 다시 실행 = 업데이트이고 다시 연결하지 않습니다.
+- **Docker가 있으면** GHCR 이미지(digest 고정)를 받아 `udally-link` 컨테이너(`--restart unless-stopped`, 볼륨 `udally-link:/cache`)로 띄웁니다. 토큰은 볼륨에 남으므로 다시 실행 = 업데이트이고 다시 연결하지 않습니다.
 - **Docker가 없으면(또는 AMD GPU면)** [uv](https://docs.astral.sh/uv/)(버전 고정)로 사용자 영역에 설치하고 로그인 때 자동으로 켭니다(Windows 시작프로그램, Linux `systemd --user`, macOS LaunchAgent).
 - GPU 판별: NVIDIA > AMD > Intel > CPU(Windows `Win32_VideoController` VEN_10DE/1002/8086, Linux `nvidia-smi`·`/dev/kfd`·`/sys/class/drm/*/device/vendor`). 판별·준비가 실패하면 CPU로 내립니다.
 
 | GPU | Docker | uv |
 |---|---|---|
-| NVIDIA | 이미지 `-cuda` + `--gpus all` | `udally-stt[cuda]`(cuBLAS·cuDNN 휠) |
+| NVIDIA | 이미지 `-cuda` + `--gpus all` | `udally-link[cuda]`(cuBLAS·cuDNN 휠) |
 | AMD (**실험**) | Linux만 `-rocm` + `/dev/kfd`·`/dev/dri`. Windows Docker에는 ROCm 경로가 없어 uv | CTranslate2 ROCm 휠(OpenNMT 공식 릴리스 v4.8.2, sha256 고정) + AMD 공식 색인의 ROCm 런타임 |
-| Intel | 이미지 `-openvino` + Linux `/dev/dri`, Windows Docker Desktop `--device /dev/dxg -v /usr/lib/wsl:/usr/lib/wsl` | `udally-stt[openvino]` |
+| Intel | 이미지 `-openvino` + Linux `/dev/dri`, Windows Docker Desktop `--device /dev/dxg -v /usr/lib/wsl:/usr/lib/wsl` | `udally-link[openvino]` |
 | 없음 / macOS | 이미지 `-cpu` | 기본 |
 
 직접 명령(고급, `<버전>`·`<커밋>`은 릴리스 노트 참고):
 
 ```bash
 # uv
-uv tool install --force --python 3.12 "udally-stt[cuda] @ git+https://github.com/Seokyoung-Hong/udally-stt@<커밋>"
-udally-stt connect            # 연결 후 계속 실행(Ctrl+C로 끔). --until-linked: 연결만 하고 끝냄
-udally-stt unlink             # 스스로 끊기(토큰 폐기)
+uv tool install --force --python 3.12 "udally-link[cuda] @ git+https://github.com/Seokyoung-Hong/udally-link@<커밋>"
+udally-link connect            # 연결 후 계속 실행(Ctrl+C로 끔). --until-linked: 연결만 하고 끝냄
+udally-link unlink             # 스스로 끊기(토큰 폐기)
 # Docker
-docker run -d --name udally-stt --restart unless-stopped -v udally-stt:/cache ghcr.io/seokyoung-hong/udally-stt:<버전>-cpu connect
-docker logs -f udally-stt     # 기기 인증 주소·코드
+docker run -d --name udally-link --restart unless-stopped -v udally-link:/cache ghcr.io/seokyoung-hong/udally-link:<버전>-cpu connect
+docker logs -f udally-link     # 기기 인증 주소·코드
 # compose
 docker compose -f compose.yaml -f compose.link.yaml up -d   # GPU면 compose.cuda.yaml 등을 함께
 ```
 
-- 유달리 주소는 `UDALLY_URL`(기본 `https://udally.sio2.kr`). 토큰 파일은 `STT_LINK_FILE`(Docker `/cache/udally-link.json`, Windows `%APPDATA%\udally-stt\link.json`, 그 밖 `~/.config/udally-stt/link.json`, POSIX 0600). 로그에는 토큰 앞 12자만 남깁니다.
+- 유달리 주소는 `UDALLY_URL`(기본 `https://udally.sio2.kr`). 토큰 파일은 `LINK_FILE`(Docker `/cache/udally-link.json`, Windows `%APPDATA%\udally-link\link.json`, 그 밖 `~/.config/udally-link/link.json`, POSIX 0600). 로그에는 토큰 앞 12자만 남깁니다.
 - 동작: 5초마다 heartbeat로 모델 목록을 보내고 [모델 적용]·작업을 받습니다. 작업은 트랙·녹음을 내려받아 PC 안에서 구간을 잘라 전사하고 구간별 결과만 올립니다(이름 목록은 받지 않음). 받은 오디오는 작업이 끝나면 지웁니다.
 - 끊김: 네트워크 오류·5xx는 2·4·8…60초 백오프, 401(유달리에서 끊음)은 토큰 파일을 지우고 종료 코드 3, 426(업데이트 필요)은 4.
 - 연결 모드는 포트를 열지 않습니다. Docker HEALTHCHECK는 마지막 heartbeat 성공 시각(2분 안)으로 봅니다.
@@ -52,12 +54,26 @@ docker compose -f compose.yaml -f compose.link.yaml up -d   # GPU면 compose.cud
   - Docker 안에서는 `localhost`·`127.0.0.1`을 `host.docker.internal`로 바꿔 부릅니다(`compose.link.yaml`의 `extra_hosts`). `docker run`이면 `--add-host host.docker.internal:host-gateway`를 붙여 주세요.
   - 키·메시지·결과는 로그에 남기지 않습니다.
 
+### 옛 이름(udally-stt)에서 옮기기
+
+- **설치 스크립트를 다시 실행하면 됩니다.** 옛 컨테이너 `udally-stt`·uv 도구 `udally-stt`·시작프로그램 `udally-stt.lnk`·`systemd --user` `udally-stt.service`·LaunchAgent `kr.sio2.udally-stt`가 있으면 지우고 새 이름으로 다시 만듭니다.
+- 연결 토큰은 그대로 씁니다(다시 연결하지 않음). Docker는 옛 볼륨 `udally-stt`가 있고 새 볼륨 `udally-link`가 없으면 옛 볼륨을 그대로 이어 씁니다. uv는 `%APPDATA%\udally-stt\link.json`·`~/.config/udally-stt/link.json`을 새 위치로 옮깁니다.
+- 환경변수는 새 이름 `LINK_*`(토큰 파일은 `LINK_FILE`)가 우선이고, 옛 `STT_*`(`STT_LINK_FILE`)도 계속 읽습니다. `.env`를 고치지 않아도 됩니다.
+- compose는 프로젝트 이름을 `udally-link`로 고정해 모델 볼륨이 `udally-link_models`가 됩니다. 옛 `udally-stt_models`(받은 모델)를 이어 쓰려면 한 번 복사합니다:
+
+```bash
+docker compose -p udally-stt down        # 옛 compose 컨테이너를 멈춤(볼륨은 남음)
+docker volume create udally-link_models
+docker run --rm -v udally-stt_models:/from:ro -v udally-link_models:/to alpine cp -a /from/. /to/
+docker compose up -d --build             # 확인 뒤 옛 볼륨 삭제: docker volume rm udally-stt_models
+```
+
 ## 1. 띄우기
 
 ### Docker(권장)
 
 ```bash
-cp .env.example .env          # STT_API_KEY 등 값 고치기
+cp .env.example .env          # LINK_API_KEY 등 값 고치기
 docker compose up -d --build                                   # CPU
 docker compose -f compose.yaml -f compose.cuda.yaml up -d --build   # NVIDIA GPU
 docker compose -f compose.yaml -f compose.openvino.yaml up -d --build   # Intel GPU(Linux)
@@ -76,7 +92,7 @@ docker compose -f compose.yaml -f compose.cuda.yaml -f compose.nemotron.yaml up 
 ### uv(한 줄)
 
 ```bash
-STT_API_KEY=... STT_HOST=0.0.0.0 STT_PORT=8000 uv run server.py
+LINK_API_KEY=... LINK_HOST=0.0.0.0 LINK_PORT=8000 uv run server.py
 ```
 
 - 의존성은 `server.py` 머리(PEP 723)와 `pyproject.toml`(같은 목록, `test_plan.py`가 검사)에 있어 uv가 알아서 설치합니다. 모델 캐시는 `HF_HOME`(기본 `~/.cache/huggingface`)입니다.
@@ -88,19 +104,19 @@ STT_API_KEY=... STT_HOST=0.0.0.0 STT_PORT=8000 uv run server.py
 
 | 이름 | 기본값 | 설명 |
 |---|---|---|
-| `STT_API_KEY` | (없음) | 정하면 모든 경로에 `Authorization: Bearer <키>`가 필요합니다. 비우면 무인증입니다. |
-| `STT_MODELS` | 아래 프리셋 5개(Nemotron은 해당 이미지에서만) | `/v1/models`에 보일 모델 ID(쉼표 구분). 여기에 없는 ID는 404입니다. |
-| `STT_DEVICE` | `auto` | `auto`(NVIDIA > AMD > Intel > CPU) · `cuda` · `rocm` · `openvino` · `cpu` |
-| `STT_GPUS` | 전부 | 쓸 GPU 번호(nvidia-smi·HIP·OpenVINO `GPU.n` 번호). 예 `0,1`. `CUDA_VISIBLE_DEVICES`와 함께 쓰지 마세요(번호가 어긋납니다). |
-| `STT_CPU_FALLBACK` | `1` | GPU 메모리가 모자라거나 GPU를 쓸 수 없을 때 CPU로 내립니다. `0`이면 거절합니다. |
-| `STT_COMPUTE_TYPE` | 자동 | 정하면 정밀도를 고정합니다(자동 강등 안 함). |
-| `STT_CONCURRENCY` | `3` | 동시 처리 수. 유달리는 3요청을 동시에 보냅니다. |
-| `STT_HOST` / `STT_PORT` | `127.0.0.1` / `8000` | uv 실행 때 여는 주소. Docker는 `STT_BIND` / `STT_PORT`(호스트 쪽)를 씁니다. |
+| `LINK_API_KEY` | (없음) | 정하면 모든 경로에 `Authorization: Bearer <키>`가 필요합니다. 비우면 무인증입니다. |
+| `LINK_MODELS` | 아래 프리셋 5개(Nemotron은 해당 이미지에서만) | `/v1/models`에 보일 모델 ID(쉼표 구분). 여기에 없는 ID는 404입니다. |
+| `LINK_DEVICE` | `auto` | `auto`(NVIDIA > AMD > Intel > CPU) · `cuda` · `rocm` · `openvino` · `cpu` |
+| `LINK_GPUS` | 전부 | 쓸 GPU 번호(nvidia-smi·HIP·OpenVINO `GPU.n` 번호). 예 `0,1`. `CUDA_VISIBLE_DEVICES`와 함께 쓰지 마세요(번호가 어긋납니다). |
+| `LINK_CPU_FALLBACK` | `1` | GPU 메모리가 모자라거나 GPU를 쓸 수 없을 때 CPU로 내립니다. `0`이면 거절합니다. |
+| `LINK_COMPUTE_TYPE` | 자동 | 정하면 정밀도를 고정합니다(자동 강등 안 함). |
+| `LINK_CONCURRENCY` | `3` | 동시 처리 수. 유달리는 3요청을 동시에 보냅니다. |
+| `LINK_HOST` / `LINK_PORT` | `127.0.0.1` / `8000` | uv 실행 때 여는 주소. Docker는 `LINK_BIND` / `LINK_PORT`(호스트 쪽)를 씁니다. |
 | `UDALLY_URL` | `https://udally.sio2.kr` | 연결 모드가 부를 유달리 주소 |
 | `UDALLY_AI_HOSTS` | (비움) | AI 거쳐 보내기로 부를 수 있는 LAN 호스트(쉼표). 루프백·`host.docker.internal`은 늘 허용 |
-| `STT_LINK_FILE` | 0절 | 연결 토큰 파일 위치 |
-| `STT_NAME` | 컴퓨터 이름 | 연결할 때 보낼 기기 이름(50자, 유달리 확인 화면에서 고칠 수 있음) |
-| `STT_ROCM_VERSION` | `7.13.0` | AMD(Linux) ROCm 런타임 버전. rocm 이미지는 첫 실행 때 `/cache/rocm-<버전>`에 AMD 공식 색인(`repo.amd.com/rocm/whl/<GPU 계열>/`)에서 받습니다. |
+| `LINK_FILE` | 0절 | 연결 토큰 파일 위치 |
+| `LINK_NAME` | 컴퓨터 이름 | 연결할 때 보낼 기기 이름(50자, 유달리 확인 화면에서 고칠 수 있음) |
+| `LINK_ROCM_VERSION` | `7.13.0` | AMD(Linux) ROCm 런타임 버전. rocm 이미지는 첫 실행 때 `/cache/rocm-<버전>`에 AMD 공식 색인(`repo.amd.com/rocm/whl/<GPU 계열>/`)에서 받습니다. |
 
 ## 2. 모델 프리셋
 
@@ -110,7 +126,7 @@ STT_API_KEY=... STT_HOST=0.0.0.0 STT_PORT=8000 uv run server.py
 | `Systran/faster-whisper-medium` | OpenAI Whisper medium | 1.53GB | 여유 있는 CPU, 4GB GPU | 2.6GB / 1.7GB / 2.2GB | 약 2배¹ |
 | `deepdml/faster-whisper-large-v3-turbo-ct2` | OpenAI Whisper large-v3-turbo | 1.62GB | **GPU 기본** | 2.7GB / 1.7GB / 2.2GB | 약 8배¹. 이 PC GPU 2장에서 6.3초 음성 3동시 0.4~0.8초 |
 | `Systran/faster-whisper-large-v3` | OpenAI Whisper large-v3 | 3.09GB | 6GB 이상 GPU(최고 품질) | 4.4GB / 2.6GB / 3.1GB | 1배(기준)¹ |
-| `nvidia/nemotron-3.5-asr-streaming-0.6b` | NVIDIA Nemotron 3.5 ASR 0.6B | 2.55GB(float32) | NVIDIA GPU, **`udally-stt:nemotron` 이미지에서만 보임** | 2.1GB(GPU당, 실측 약 1.4GB) / (없음) / CPU float32 3.9GB | 이 PC GPU 2장(float16)에서 6.3초 음성 단건 0.4~0.7초, 3동시 0.7~1.0초(rtf 0.16~0.23). 첫 적재 약 14초 |
+| `nvidia/nemotron-3.5-asr-streaming-0.6b` | NVIDIA Nemotron 3.5 ASR 0.6B | 2.55GB(float32) | NVIDIA GPU, **`udally-link:nemotron` 이미지에서만 보임** | 2.1GB(GPU당, 실측 약 1.4GB) / (없음) / CPU float32 3.9GB | 이 PC GPU 2장(float16)에서 6.3초 음성 단건 0.4~0.7초, 3동시 0.7~1.0초(rtf 0.16~0.23). 첫 적재 약 14초 |
 
 ### 모델 라이선스
 
@@ -158,18 +174,18 @@ STT_API_KEY=... STT_HOST=0.0.0.0 STT_PORT=8000 uv run server.py
 | 경우 | 동작 | 이 PC 실측 |
 |---|---|---|
 | ① GPU 여러 개 | 필요 메모리가 들어가는 GPU마다 모델을 하나씩 올리고, 진행 중 요청이 가장 적은 GPU로 보냅니다(GPU당 동시 수 = ⌈3/GPU 수⌉). | RTX 5060 Ti + RTX 3060: `cuda:0,1` float16, 3동시 4묶음 모두 200 |
-| ② GPU 1개·넉넉 | float16 | `STT_GPUS=1`: `cuda:1` float16 |
-| ③ GPU 1개·부족 | float16 → int8_float16 → int8 순으로 낮추고, 그래도 안 되면 CPU 폴백(`STT_CPU_FALLBACK=0`이면 `fits:false`로 [적용] 거절) | 3060 여유 2.3GB로 만든 뒤: turbo `int8_float16`, large-v3 `cpu int8`(폴백 끄면 `fits:false`, POST 409) |
+| ② GPU 1개·넉넉 | float16 | `LINK_GPUS=1`: `cuda:1` float16 |
+| ③ GPU 1개·부족 | float16 → int8_float16 → int8 순으로 낮추고, 그래도 안 되면 CPU 폴백(`LINK_CPU_FALLBACK=0`이면 `fits:false`로 [적용] 거절) | 3060 여유 2.3GB로 만든 뒤: turbo `int8_float16`, large-v3 `cpu int8`(폴백 끄면 `fits:false`, POST 409) |
 | ④ GPU 없음 | CPU int8, 여유 RAM보다 크면 `fits:false` | CPU 컨테이너: 모든 프리셋 `cpu int8`, 3동시 200 |
 
 - **여러 GPU를 CTranslate2 한 모델로 묶지 않은 이유**: `device_index=[0,1]`은 계산 능력이 다른 GPU에서 `Cannot use multiple GPUs with different Compute Capabilities`로 실패했습니다(이 PC 실측). 그래서 GPU마다 모델을 따로 올리고, GPU마다 전용 스레드를 둡니다. 한 스레드가 두 GPU 모델을 번갈아 부르면 `CUDA failed with error invalid argument`가 났습니다(실측).
 - **OOM**: 적재 중 OOM은 프로세스가 죽지 않고 `RuntimeError`로 잡히는 것을 확인했습니다(3060에 turbo 7번째 적재에서 OOM, 이후 같은 프로세스에서 전사 정상). 적재 중 OOM이면 한 단계 낮춰 바로 다시 올리고, 전사 중 OOM이면 그 요청만 503으로 실패시키고 다음 요청은 낮은 정밀도로 다시 올립니다. 전사 중 OOM은 재현하지 못했습니다(여유 57MB에서도 CTranslate2가 미리 잡아 둔 메모리로 정상 처리, 확인 불가). CPU에서 RAM이 바닥나면 운영체제가 프로세스를 죽일 수 있어 막지 못합니다.
-- GPU 실행이 OOM이 아닌 이유(라이브러리 누락 등)로 실패하면 이후 CPU만 씁니다(`STT_CPU_FALLBACK=1`일 때).
+- GPU 실행이 OOM이 아닌 이유(라이브러리 누락 등)로 실패하면 이후 CPU만 씁니다(`LINK_CPU_FALLBACK=1`일 때).
 - 한 번에 한 모델만 메모리에 둡니다. 다른 모델로 바꾸면 이전 모델을 내리고 새로 올립니다.
 
 ## 4. API 규약
 
-모든 경로는 `STT_API_KEY`를 정했으면 `Authorization: Bearer <키>`가 필요합니다(틀리면 401).
+모든 경로는 `LINK_API_KEY`를 정했으면 `Authorization: Bearer <키>`가 필요합니다(틀리면 401).
 
 ### `GET /v1/models` — 프리셋 전체(받지 않은 것 포함)
 
@@ -245,11 +261,11 @@ multipart: `file`(webm/Opus, wav 등 PyAV가 읽는 형식), `model`, `language`
 |---|---|
 | `meeting.stt_url` | `http://<이 서버 IP>:<포트>` (예 `http://192.0.2.10:8000`). 끝에 `/v1`을 붙이지 않습니다. 루프백·내부 이름은 유달리가 막습니다. |
 | `meeting.stt_model` | 설정 화면 목록에서 고릅니다(위 표의 모델 ID). |
-| `meeting.stt_api_key` | `.env`의 `STT_API_KEY`와 같은 값 |
+| `meeting.stt_api_key` | `.env`의 `LINK_API_KEY`와 같은 값 |
 
 ## 6. 유달리 LXC 밖에 둘 때(네트워크·키)
 
-- 기본 바인드는 `127.0.0.1`이라 같은 PC에서만 열립니다. 다른 머신에서 부르려면 `STT_BIND=0.0.0.0`(uv는 `STT_HOST=0.0.0.0`)으로 열고 **반드시 `STT_API_KEY`를 정합니다.** 키 없이 열면 같은 네트워크의 누구나 전사·모델 받기를 할 수 있습니다.
+- 기본 바인드는 `127.0.0.1`이라 같은 PC에서만 열립니다. 다른 머신에서 부르려면 `LINK_BIND=0.0.0.0`(uv는 `LINK_HOST=0.0.0.0`)으로 열고 **반드시 `LINK_API_KEY`를 정합니다.** 키 없이 열면 같은 네트워크의 누구나 전사·모델 받기를 할 수 있습니다.
 - 평문 HTTP입니다. 회의 음성과 키가 그대로 지나가므로 같은 사설망(집·사무실 LAN, VPN) 안에서만 쓰고, 인터넷에 직접 열지 마세요. 밖에서 써야 하면 TLS 리버스 프록시나 VPN을 앞에 둡니다.
 - 방화벽은 유달리 서버(디스코드 게이트웨이와 웹이 도는 곳)의 IP에서 오는 포트만 허용하는 것이 좋습니다.
 - Windows는 Hyper-V 예약 포트 범위가 있어 일부 포트를 열 수 없습니다(이 PC에서 18431 거부). 다른 포트를 고르세요.
@@ -259,7 +275,7 @@ multipart: `file`(webm/Opus, wav 등 PyAV가 읽는 형식), `model`, `language`
 ```bash
 uv run --no-project --python 3.12 --with fastapi,psutil,python-multipart,numpy python test_plan.py   # 배치 계산·장치 판별(가짜 장치)·의존성 목록 일치
 uv run --no-project --with "faster-whisper>=1.1,<2" --with "av<17" --with fastapi,psutil,python-multipart python test_link.py   # 연결(가짜 core)
-docker run --rm -v ./samples:/app/samples:ro -v ./test_decode.py:/app/test_decode.py:ro --entrypoint python udally-stt:cpu test_decode.py   # 이미지 디코드·GPL 부재
+docker run --rm -v ./samples:/app/samples:ro -v ./test_decode.py:/app/test_decode.py:ro --entrypoint python udally-link:cpu test_decode.py   # 이미지 디코드·GPL 부재
 sh -n scripts/install.sh && UDALLY_DRY_RUN=1 UDALLY_FORCE=uv UDALLY_SOURCE=. sh scripts/install.sh   # 설치 스크립트 드라이런
 curl -H "Authorization: Bearer $KEY" http://127.0.0.1:8000/v1/models
 curl -H "Authorization: Bearer $KEY" -X POST http://127.0.0.1:8000/v1/models/Systran%2Ffaster-whisper-small

@@ -2,12 +2,12 @@
 #   docker compose -f compose.yaml -f compose.openvino.yaml up -d --build
 # Windows Docker Desktop이면 devices를 "/dev/dxg"로, volumes에 "/usr/lib/wsl:/usr/lib/wsl"을 더합니다.
 services:
-  stt:
+  link:
     build:
       args:
         VARIANT: openvino
-    image: udally-stt:openvino
+    image: udally-link:openvino
     environment:
-      STT_DEVICE: openvino
+      LINK_DEVICE: openvino
     devices:
       - /dev/dri

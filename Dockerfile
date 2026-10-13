@@ -78,13 +78,13 @@ COPY licenses ./licenses
 COPY scripts/third_party.py /tmp/third_party.py
 RUN python /tmp/third_party.py > /app/licenses/PACKAGES.txt && rm /tmp/third_party.py
 ARG REVISION=""
-LABEL org.opencontainers.image.title="udally-stt"       org.opencontainers.image.description="유달리용 로컬 전사 서버(OpenAI 호환 + 내 PC 연결). 비상업 라이선스."       org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0"       org.opencontainers.image.source="https://github.com/Seokyoung-Hong/udally-stt"       org.opencontainers.image.url="https://github.com/Seokyoung-Hong/udally-stt"       org.opencontainers.image.documentation="https://github.com/Seokyoung-Hong/udally-stt#readme"       org.opencontainers.image.vendor="Seokyoung-Hong"       org.opencontainers.image.version="0.1.0-${VARIANT}"       org.opencontainers.image.revision="${REVISION}"
+LABEL org.opencontainers.image.title="udally-link"       org.opencontainers.image.description="유달리용 로컬 전사 서버(OpenAI 호환 + 내 PC 연결). 비상업 라이선스."       org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0"       org.opencontainers.image.source="https://github.com/Seokyoung-Hong/udally-link"       org.opencontainers.image.url="https://github.com/Seokyoung-Hong/udally-link"       org.opencontainers.image.documentation="https://github.com/Seokyoung-Hong/udally-link#readme"       org.opencontainers.image.vendor="Seokyoung-Hong"       org.opencontainers.image.version="0.1.0-${VARIANT}"       org.opencontainers.image.revision="${REVISION}"
 # pip로 넣은 CUDA 라이브러리 위치(cuda 아니면 없는 경로라 무해)
 ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib \
-    HF_HOME=/cache CUDA_CACHE_PATH=/cache/cuda-jit STT_LINK_FILE=/cache/udally-link.json STT_HOST=0.0.0.0 STT_PORT=8000 \
-    PYTHONUNBUFFERED=1 STT_ROCM_INSTALL=1 STT_ALIVE_FILE=/tmp/udally-alive
+    HF_HOME=/cache CUDA_CACHE_PATH=/cache/cuda-jit LINK_FILE=/cache/udally-link.json LINK_HOST=0.0.0.0 LINK_PORT=8000 \
+    PYTHONUNBUFFERED=1 LINK_ROCM_INSTALL=1 LINK_ALIVE_FILE=/tmp/udally-alive
 USER app
 EXPOSE 8000
-# connect 모드는 포트를 열지 않는다: 마지막 heartbeat 성공 시각(STT_ALIVE_FILE)이 2분 안이면 정상. HTTP 모드는 /v1/models.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s CMD python -c "import os,sys,time,urllib.request as u;f=os.environ['STT_ALIVE_FILE'];sys.exit(time.time()-os.path.getmtime(f)>120) if os.path.exists(f) else u.urlopen(u.Request('http://127.0.0.1:8000/v1/models',headers={'Authorization':'Bearer '+os.environ.get('STT_API_KEY','')}),timeout=4)"
+# connect 모드는 포트를 열지 않는다: 마지막 heartbeat 성공 시각(LINK_ALIVE_FILE)이 2분 안이면 정상. HTTP 모드는 /v1/models.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s CMD python -c "import os,sys,time,urllib.request as u;f=os.environ['LINK_ALIVE_FILE'];sys.exit(time.time()-os.path.getmtime(f)>120) if os.path.exists(f) else u.urlopen(u.Request('http://127.0.0.1:8000/v1/models',headers={'Authorization':'Bearer '+(os.environ.get('LINK_API_KEY') or os.environ.get('STT_API_KEY',''))}),timeout=4)"
 ENTRYPOINT ["python", "server.py"]

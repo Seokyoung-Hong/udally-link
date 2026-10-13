@@ -1,5 +1,5 @@
-# udally-stt 한 줄 설치(Windows PowerShell 5.1·7): irm https://udally.sio2.kr/stt/install.ps1 | iex
-# 다시 실행하면 업데이트(이미 연결돼 있으면 다시 연결하지 않음). 제거: irm https://udally.sio2.kr/stt/uninstall.ps1 | iex
+# udally-link 한 줄 설치(Windows PowerShell 5.1·7): irm https://udally.sio2.kr/link/install.ps1 | iex
+# 다시 실행하면 업데이트(이미 연결돼 있으면 다시 연결하지 않음). 제거: irm https://udally.sio2.kr/link/uninstall.ps1 | iex
 # 사람 입력을 받지 않는다. 관리자 권한(UAC)을 요구하지 않는다. 토큰을 출력하지 않는다.
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 & {
@@ -13,8 +13,8 @@ Set-StrictMode -Version 2
 # ---------- 릴리스 값(.github/workflows/release.yml이 채운다) ----------
 $Version = '0.1.0'
 $Commit = ''
-$Image = 'ghcr.io/seokyoung-hong/udally-stt'
-$Repo = 'https://github.com/Seokyoung-Hong/udally-stt'
+$Image = 'ghcr.io/seokyoung-hong/udally-link'
+$Repo = 'https://github.com/Seokyoung-Hong/udally-link'
 $Digest = @{ cpu = ''; cuda = ''; openvino = '' }
 $UvVersion = '0.13.0'
 $Ct2RocmZip = 'https://github.com/OpenNMT/CTranslate2/releases/download/v4.8.2/rocm-python-wheels-Windows.zip'
@@ -28,8 +28,9 @@ $RocmWheels = @(
 # ---------- 시험용 덮어쓰기(평소에는 비움) ----------
 function GetEnv($name, $default) { $v = [Environment]::GetEnvironmentVariable($name); if ($v) { $v } else { $default } }
 $UdallyUrl = GetEnv 'UDALLY_URL' 'https://udally.sio2.kr'
-$Name = GetEnv 'UDALLY_NAME' 'udally-stt'
-$Volume = GetEnv 'UDALLY_VOLUME' 'udally-stt'
+$Name = GetEnv 'UDALLY_NAME' 'udally-link'
+$Volume = GetEnv 'UDALLY_VOLUME' 'udally-link'
+$LegacyName = 'udally-stt'  # 옛 이름(컨테이너·볼륨·uv 도구·시작프로그램). 있으면 정리하고 새 이름으로
 $Dry = (GetEnv 'UDALLY_DRY_RUN' '0') -eq '1'
 $Force = GetEnv 'UDALLY_FORCE' ''
 $GpuForce = GetEnv 'UDALLY_GPU' ''
@@ -76,9 +77,16 @@ function DockerInstall($kind) {
     $ref = "$Image@$d"
     if ((Run docker @('pull', $ref)) -ne 0) { throw "이미지를 받지 못했습니다: $ref" }
   }
-  Say "udally-stt $Version ($kind, Docker)를 설치합니다."
+  Say "udally-link $Version ($kind, Docker)를 설치합니다."
+  # udally-stt 시절 볼륨(토큰·모델)이 있고 새 볼륨이 없으면 그것을 이어 쓴다(다시 연결하지 않게)
+  $vol = $Volume
+  if (-not (GetEnv 'UDALLY_VOLUME' '') -and (Quiet docker @('volume', 'inspect', $LegacyName)) -and -not (Quiet docker @('volume', 'inspect', $Volume))) { $vol = $LegacyName }
+  if ($Name -ne $LegacyName -and (Quiet docker @('inspect', $LegacyName))) {
+    Say "옛 이름 컨테이너 ${LegacyName}을 지우고 ${Name}으로 바꿉니다."
+    if ($Dry) { Say "[dry-run] docker rm -f $LegacyName" } else { Quiet docker @('rm', '-f', $LegacyName) | Out-Null }
+  }
   if (-not $Dry) { Quiet docker @('rm', '-f', $Name) | Out-Null } else { Say "[dry-run] docker rm -f $Name" }
-  $argv = @('run', '-d', '--name', $Name, '--restart', 'unless-stopped', '-v', "${Volume}:/cache", '-e', "UDALLY_URL=$UdallyUrl") + $gpuArgs + @($ref, 'connect')
+  $argv = @('run', '-d', '--name', $Name, '--restart', 'unless-stopped', '-v', "${vol}:/cache", '-e', "UDALLY_URL=$UdallyUrl") + $gpuArgs + @($ref, 'connect')
   if ($Dry) { Say ('[dry-run] docker ' + ($argv -join ' ')) }
   else { & docker @argv | Out-Null; if ($LASTEXITCODE -ne 0) { throw '컨테이너를 시작하지 못했습니다.' } }
   if ($Dry) { return }
@@ -116,7 +124,7 @@ function UvInstall($kind) {
   elseif ($kind -eq 'openvino') { $extra = '[openvino]' }
   elseif ($kind -eq 'rocm') {
     Say 'AMD GPU는 실험 지원입니다. CTranslate2 ROCm 휠과 AMD ROCm 7.2.1 휠을 받습니다(약 1.2GB).'
-    $dir = Join-Path $env:LOCALAPPDATA 'udally-stt'
+    $dir = Join-Path $env:LOCALAPPDATA 'udally-link'
     $zip = Join-Path $dir 'ct2-rocm.zip'
     $whlDir = Join-Path $dir 'ct2-rocm'
     if ($Dry) { $whl = Join-Path $whlDir 'ctranslate2.whl'; Say "[dry-run] download $Ct2RocmZip" }
@@ -131,13 +139,23 @@ function UvInstall($kind) {
     $with = @('--with', $whl)
     foreach ($w in $RocmWheels) { $with += @('--with', $w) }
   }
-  Say "udally-stt $Version ($kind, uv)를 설치합니다."
-  if ((Run uv (@('tool', 'install', '--force', '--python', '3.12', "udally-stt$extra @ $src") + $with)) -ne 0) { throw 'uv 설치에 실패했습니다.' }
+  $legacyExe = Join-Path $bin "$LegacyName.exe"
+  if (Test-Path $legacyExe) {
+    Say "옛 이름 ${LegacyName}을 지우고 udally-link로 바꿉니다(연결 토큰은 그대로 옮겨 씁니다)."
+    if ($Dry) { Say "[dry-run] stop $legacyExe, remove $LegacyName.lnk, uv tool uninstall $LegacyName" }
+    else {
+      Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $legacyExe } | Stop-Process -Force
+      Remove-Item -Force (Join-Path ([Environment]::GetFolderPath('Startup')) "$LegacyName.lnk") -ErrorAction SilentlyContinue
+      Quiet uv @('tool', 'uninstall', $LegacyName) | Out-Null
+    }
+  }
+  Say "udally-link $Version ($kind, uv)를 설치합니다."
+  if ((Run uv (@('tool', 'install', '--force', '--python', '3.12', "udally-link$extra @ $src") + $with)) -ne 0) { throw 'uv 설치에 실패했습니다.' }
   $env:UDALLY_URL = $UdallyUrl
-  $exe = Join-Path $bin 'udally-stt.exe'
+  $exe = Join-Path $bin 'udally-link.exe'
   if ((Run $exe @('connect', '--until-linked')) -ne 0) { throw '연결하지 못했습니다.' }
   # 자동 시작: 시작프로그램 폴더 바로가기(최소화 창). 관리자 권한 불필요.
-  $lnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'udally-stt.lnk'
+  $lnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'udally-link.lnk'
   if ($Dry) { Say "[dry-run] shortcut $lnk -> $exe connect" }
   else {
     $s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)

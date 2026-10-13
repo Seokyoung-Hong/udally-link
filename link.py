@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """유달리에 내 PC를 전사 서버로 연결한다(IMPL-PLAN-11 §3·§4·§10). 들어오는 연결 없이 PC → 유달리로만 나간다.
 
-udally-stt connect [--until-linked]  기기 인증(주소+코드) → 5초마다 heartbeat → 배정된 작업을 받아 전사·결과 보고
-udally-stt unlink                    스스로 끊기(DELETE /self) + 토큰 파일 삭제
+udally-link connect [--until-linked]  기기 인증(주소+코드) → 5초마다 heartbeat → 배정된 작업을 받아 전사·결과 보고
+udally-link unlink                    스스로 끊기(DELETE /self) + 토큰 파일 삭제
 의존성은 server.py와 같다(HTTP는 표준 urllib). 토큰은 로그에 앞 12자만 남긴다.
 """
 
@@ -29,7 +29,7 @@ import numpy
 
 import server
 
-env = os.environ.get
+env = server.env
 URL = (env("UDALLY_URL") or "https://udally.sio2.kr").rstrip("/")
 API = "/api/integrations/stt"
 MIN_SEGMENT_MS = 1500  # Node transcribe.mjs MIN_SEGMENT_MS와 같다
@@ -38,7 +38,7 @@ UPLOAD_USER = "upload"  # Node runRetry의 올린 녹음 화자 id와 같다
 WINDOW_S = 600  # 올린 녹음은 10분 창으로 디코드해 VAD
 REPORT_S = 5
 RESULT_RETRY_S = 600  # 결과 보고는 끊겨도 10분까지 다시 보낸다
-log = logging.getLogger("udally-stt.link")
+log = logging.getLogger("udally-link.link")
 
 # 문구: IMPL-PLAN-11 §9.3 {{COPY:키}} 자리. 확정 문구는 Sol이 쓴다(여기는 임시 격식체).
 T = {
@@ -48,7 +48,7 @@ T = {
     "link_denied": "연결이 거절되었습니다.",
     "link_expired": "코드가 만료되어 새 코드를 받습니다.",
     "pc_unlinked": "유달리에서 이 PC 연결이 끊겼습니다. 다시 연결하려면 다시 실행해 주세요.",
-    "pc_update_needed": "udally-stt를 새 버전으로 업데이트해야 합니다. 설치 명령을 다시 실행해 주세요.",
+    "pc_update_needed": "udally-link를 새 버전으로 업데이트해야 합니다. 설치 명령을 다시 실행해 주세요.",
     "unlinked_self": "연결을 끊었습니다.",
     "not_linked": "연결된 적이 없습니다.",
     "already_linked": "이미 유달리에 연결되어 있습니다.",
@@ -61,11 +61,16 @@ def say(key, **kw) -> None:
 
 # ---------- 토큰 파일 ----------
 def link_file() -> Path:
-    if env("STT_LINK_FILE"):
-        return Path(env("STT_LINK_FILE"))
-    if sys.platform == "win32":
-        return Path(env("APPDATA") or Path.home(), "udally-stt", "link.json")
-    return Path.home() / ".config" / "udally-stt" / "link.json"
+    if env("LINK_FILE"):
+        return Path(env("LINK_FILE"))
+    base = Path(env("APPDATA") or Path.home()) if sys.platform == "win32" else Path.home() / ".config"
+    p = base / "udally-link" / "link.json"
+    old = base / "udally-stt" / "link.json"  # udally-stt 시절 토큰: 다시 연결하지 않게 옮겨 쓴다
+    if not p.exists() and old.exists():
+        with contextlib.suppress(OSError):
+            p.parent.mkdir(parents=True, exist_ok=True)
+            old.replace(p)
+    return p
 
 
 def load_link() -> dict | None:
@@ -98,7 +103,7 @@ class Offline(Exception):
 def call(method: str, path: str, body=None, token=None, url=None, timeout=30) -> tuple[int, dict]:
     req = urllib.request.Request((url or URL) + API + path, method=method,
                                  data=None if body is None else json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json", "User-Agent": f"udally-stt/{server.VERSION}",
+                                 headers={"Content-Type": "application/json", "User-Agent": f"udally-link/{server.VERSION}",
                                           **({"Authorization": f"Bearer {token}"} if token else {})})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -117,7 +122,7 @@ def call(method: str, path: str, body=None, token=None, url=None, timeout=30) ->
 def fetch_file(path: str, dest: Path, token: str, url=None) -> int:
     """GET 스트림을 파일로(메모리에 올리지 않는다). 성공하면 200, 아니면 상태 코드."""
     req = urllib.request.Request((url or URL) + API + path, headers={"Authorization": f"Bearer {token}",
-                                                                      "User-Agent": f"udally-stt/{server.VERSION}"})
+                                                                      "User-Agent": f"udally-link/{server.VERSION}"})
     try:
         with urllib.request.urlopen(req, timeout=60) as r, open(dest, "wb") as f:
             shutil.copyfileobj(r, f, 1 << 20)
@@ -141,7 +146,7 @@ def device_info() -> dict:
 
 # ---------- 기기 인증 ----------
 def device_flow(machine_id: str, sleep=time.sleep, url=None) -> dict | None:
-    name = (env("STT_NAME") or platform.node() or "my-pc")[:50]
+    name = (env("LINK_NAME") or platform.node() or "my-pc")[:50]
     fails = 0
     while True:
         try:
@@ -341,7 +346,7 @@ class Job:
         if j.get("model") not in server.PRESETS or server.status_of(j["model"])["status"] != "ready":
             self.finish({**self.p, "status": "failed", "error": "model_not_ready"}, sleep)
             return "failed"
-        tmp = Path(tempfile.mkdtemp(prefix="udally-stt-"))
+        tmp = Path(tempfile.mkdtemp(prefix="udally-link-"))
         stop = threading.Event()
 
         def reporter():
@@ -431,7 +436,7 @@ class AiFail(Exception):
 
 def ai_post(endpoint: str, body: dict, api_key: str, timeout: float) -> dict:
     req = urllib.request.Request(endpoint, method="POST", data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json", "User-Agent": f"udally-stt/{server.VERSION}",
+                                 headers={"Content-Type": "application/json", "User-Agent": f"udally-link/{server.VERSION}",
                                           **({"Authorization": f"Bearer {api_key}"} if api_key else {})})
     try:
         with _ai_opener.open(req, timeout=timeout) as r:
@@ -569,8 +574,8 @@ class Agent:
             return None
         self.fails, self.wait = 0, float(r.get("poll_s", 5)) if st == 200 else 5.0
         if st == 200:
-            if env("STT_ALIVE_FILE"):  # Docker HEALTHCHECK가 본다
-                Path(env("STT_ALIVE_FILE")).touch()
+            if env("LINK_ALIVE_FILE"):  # Docker HEALTHCHECK가 본다
+                Path(env("LINK_ALIVE_FILE")).touch()
             self.handle(r)
         elif st == 401:
             drop_link()

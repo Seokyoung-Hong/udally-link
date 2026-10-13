@@ -1,7 +1,7 @@
-# 유달리에 내 PC로 연결하는 모드(포트를 열지 않음). 기기 인증 주소·코드는 docker compose logs -f stt
+# 유달리에 내 PC로 연결하는 모드(포트를 열지 않음). 기기 인증 주소·코드는 docker compose logs -f link
 #   docker compose -f compose.yaml -f compose.link.yaml up -d            # GPU면 compose.cuda.yaml 등을 함께
 services:
-  stt:
+  link:
     command: ["connect"]
     ports: !reset []
     extra_hosts: ["host.docker.internal:host-gateway"]  # AI 자동완성: PC의 Ollama 등(link.py ai_endpoint)

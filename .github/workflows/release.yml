@@ -31,9 +31,9 @@ jobs:
           build-args: |
             VARIANT=${{ matrix.variant }}
             REVISION=${{ github.sha }}
-          tags: ghcr.io/seokyoung-hong/udally-stt:${{ github.ref_name }}-${{ matrix.variant }}
+          tags: ghcr.io/seokyoung-hong/udally-link:${{ github.ref_name }}-${{ matrix.variant }}
       - name: 이미지 안 검사(디코드 6형식·GPL 부재)
-        run: docker run --rm -v "$PWD/samples:/app/samples:ro" -v "$PWD/test_decode.py:/app/test_decode.py:ro" --entrypoint python ghcr.io/seokyoung-hong/udally-stt:${{ github.ref_name }}-${{ matrix.variant }} test_decode.py
+        run: docker run --rm -v "$PWD/samples:/app/samples:ro" -v "$PWD/test_decode.py:/app/test_decode.py:ro" --entrypoint python ghcr.io/seokyoung-hong/udally-link:${{ github.ref_name }}-${{ matrix.variant }} test_decode.py
       - id: out
         run: echo "${{ matrix.variant }}=${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
   scripts:

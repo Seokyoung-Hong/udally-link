@@ -26,9 +26,17 @@ from types import SimpleNamespace
 
 import numpy
 
-env = os.environ.get
+
+def env(name: str, default=None):
+    """환경변수. LINK_* 이름이 우선이고, 없으면 udally-stt 시절 이름(STT_*, LINK_FILE은 STT_LINK_FILE)을 읽는다."""
+    v = os.environ.get(name)
+    if v is None and name.startswith("LINK_"):
+        v = os.environ.get("STT_LINK_FILE" if name == "LINK_FILE" else "STT_" + name[5:])
+    return default if v is None else v
+
+
 NEMOTRON = "nvidia/nemotron-3.5-asr-streaming-0.6b"
-GPU_FILTER = {int(i) for i in env("STT_GPUS", "").split(",") if i.strip()}  # 비우면 전부
+GPU_FILTER = {int(i) for i in env("LINK_GPUS", "").split(",") if i.strip()}  # 비우면 전부
 OOM = re.compile(r"out of (gpu |device )?memory|hipErrorOutOfMemory|CL_OUT_OF_RESOURCES|MEM_OBJECT_ALLOCATION", re.I)
 CT2_FILES = ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*"]
 # Transformers 오프라인 전사에 필요한 파일만(.nemo·gguf 사본은 받지 않는다)
@@ -55,7 +63,7 @@ def nvidia_gpus() -> list[dict]:
     return [{"index": int(r[0]), "name": r[1], "total_mb": int(r[2]), "free_mb": int(r[3])} for r in rows if len(r) == 4]
 
 
-ROCM_VERSION = env("STT_ROCM_VERSION", "7.13.0")  # AMD pip 색인(repo.amd.com/rocm/whl/<gfx 계열>/)의 rocm 버전
+ROCM_VERSION = env("LINK_ROCM_VERSION", "7.13.0")  # AMD pip 색인(repo.amd.com/rocm/whl/<gfx 계열>/)의 rocm 버전
 # CT2 ROCm 휠 대상(CTranslate2 python/tools/prepare_build_environment_linux_rocm.sh) → AMD pip 색인 이름
 GFX_INDEX = [(r"gfx103\d", "gfx103X-all"), (r"gfx110\d", "gfx110X-all"), (r"gfx1150", "gfx1150"),
              (r"gfx1151", "gfx1151"), (r"gfx120\d", "gfx120X-all")]
@@ -92,7 +100,7 @@ def ensure_rocm(cache: str) -> None:
         return
     target = Path(cache, f"rocm-{ROCM_VERSION}")
     dirs = rocm_lib_dirs([*sys.path, str(target)])
-    if not dirs and env("STT_ROCM_INSTALL") == "1":
+    if not dirs and env("LINK_ROCM_INSTALL") == "1":
         if not gfx_targets():
             raise RuntimeError("AMD GPU(/dev/kfd)를 찾지 못했습니다. Docker는 --device /dev/kfd --device /dev/dri로 실행해 주세요.")
         idx = gfx_index(gfx_targets())
@@ -331,8 +339,8 @@ def ct2_rocm() -> bool:
     return any(b"amdhip64" in p.read_bytes() for p in libs if p.is_file())
 
 
-def pick(device: str = env("STT_DEVICE", "auto"), nvidia=None, rocm=None, openvino=None) -> "CT2 | OpenVINO":
-    """STT_DEVICE = auto | cuda | rocm | openvino | cpu. auto는 NVIDIA > AMD > Intel > CPU."""
+def pick(device: str = env("LINK_DEVICE", "auto"), nvidia=None, rocm=None, openvino=None) -> "CT2 | OpenVINO":
+    """LINK_DEVICE = auto | cuda | rocm | openvino | cpu. auto는 NVIDIA > AMD > Intel > CPU."""
     if device in ("cuda", "rocm", "cpu"):
         return CT2(device)
     if device == "openvino":

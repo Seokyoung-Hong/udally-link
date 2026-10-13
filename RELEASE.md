@@ -8,3 +8,7 @@
 ## 공개 전 확인
 - 라이선스 체크리스트: `test_decode.py`를 각 이미지에서 실행하고, `/app/licenses/PACKAGES.txt`를 확인합니다(GPL 패키지가 있으면 빌드가 실패합니다).
 - nemotron 태그는 공개 대상이 아닙니다(README 1절).
+
+## 이름 바꾸기(udally-stt → udally-link)
+- GitHub 저장소 이름을 `udally-link`로 바꿉니다(옛 주소는 GitHub가 리다이렉트). 이미지는 `ghcr.io/seokyoung-hong/udally-link`로 새로 올리고, 옛 `udally-stt` 패키지는 지우지 않습니다(이미 설치된 PC가 digest로 받음).
+- 유달리 core의 `LINK_SCRIPT_BASE`(옛 `STT_SCRIPT_BASE`)·`STT_RELEASE`를 새 저장소 커밋으로 바꿉니다.

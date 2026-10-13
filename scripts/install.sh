@@ -1,6 +1,6 @@
 #!/bin/sh
-# udally-stt 한 줄 설치(macOS·Linux): curl -fsSL https://udally.sio2.kr/stt/install.sh | sh
-# 다시 실행하면 업데이트(이미 연결돼 있으면 다시 연결하지 않음). 제거: curl -fsSL https://udally.sio2.kr/stt/uninstall.sh | sh
+# udally-link 한 줄 설치(macOS·Linux): curl -fsSL https://udally.sio2.kr/link/install.sh | sh
+# 다시 실행하면 업데이트(이미 연결돼 있으면 다시 연결하지 않음). 제거: curl -fsSL https://udally.sio2.kr/link/uninstall.sh | sh
 # 사람 입력을 받지 않는다(| sh는 표준 입력이 스크립트다). sudo를 쓰지 않는다. 토큰을 출력하지 않는다.
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 set -eu
@@ -8,8 +8,8 @@ set -eu
 # ---------- 릴리스 값(.github/workflows/release.yml이 채운다) ----------
 VERSION="0.1.0"
 COMMIT=""
-IMAGE="ghcr.io/seokyoung-hong/udally-stt"
-REPO="https://github.com/Seokyoung-Hong/udally-stt"
+IMAGE="ghcr.io/seokyoung-hong/udally-link"
+REPO="https://github.com/Seokyoung-Hong/udally-link"
 DIGEST_CPU=""
 DIGEST_CUDA=""
 DIGEST_OPENVINO=""
@@ -20,8 +20,9 @@ CT2_ROCM_SHA256="b469e765f74ef85fb97bf4fe2347c8c6296dda00d7f5cf20658f23e95004a92
 ROCM_VERSION="7.13.0"
 # ---------- 시험용 덮어쓰기(평소에는 비움) ----------
 UDALLY_URL="${UDALLY_URL:-https://udally.sio2.kr}"
-NAME="${UDALLY_NAME:-udally-stt}"          # 컨테이너 이름
-VOLUME="${UDALLY_VOLUME:-udally-stt}"      # 모델·토큰 볼륨
+NAME="${UDALLY_NAME:-udally-link}"          # 컨테이너 이름
+VOLUME="${UDALLY_VOLUME:-udally-link}"      # 모델·토큰 볼륨
+LEGACY="udally-stt"                         # 옛 이름(컨테이너·볼륨·uv 도구·자동 시작). 있으면 정리하고 새 이름으로
 DRY="${UDALLY_DRY_RUN:-0}"                 # 1이면 바꾸는 명령을 출력만 한다
 FORCE="${UDALLY_FORCE:-}"                  # docker | uv
 GPU_FORCE="${UDALLY_GPU:-}"                # cuda | rocm | openvino | cpu
@@ -79,7 +80,15 @@ docker_install() {
     ref="$IMAGE@$d"
     run docker pull "$ref"
   fi
-  say "udally-stt $VERSION ($kind, Docker)를 설치합니다."
+  say "udally-link $VERSION ($kind, Docker)를 설치합니다."
+  # udally-stt 시절 볼륨(토큰·모델)이 있고 새 볼륨이 없으면 그것을 이어 쓴다(다시 연결하지 않게)
+  if [ -z "${UDALLY_VOLUME:-}" ] && docker volume inspect "$LEGACY" >/dev/null 2>&1 && ! docker volume inspect "$VOLUME" >/dev/null 2>&1; then
+    VOLUME=$LEGACY
+  fi
+  if [ "$NAME" != "$LEGACY" ] && docker inspect "$LEGACY" >/dev/null 2>&1; then
+    say "옛 이름 컨테이너 $LEGACY을 지우고 $NAME으로 바꿉니다."
+    run docker rm -f "$LEGACY" >/dev/null 2>&1 || true
+  fi
   run docker rm -f "$NAME" >/dev/null 2>&1 || true
   # shellcheck disable=SC2086 # args는 단어로 나뉘어야 한다
   run docker run -d --name "$NAME" --restart unless-stopped -v "$VOLUME:/cache" -e UDALLY_URL="$UDALLY_URL" $args "$ref" connect >/dev/null
@@ -120,7 +129,7 @@ uv_install() {
       if [ -z "$idx" ]; then say "이 AMD GPU는 CTranslate2 ROCm 휠 대상이 아니라 CPU로 설치합니다."; kind=cpu
       else
         say "AMD GPU는 실험 지원입니다. CTranslate2 ROCm 휠과 ROCm $ROCM_VERSION($idx)을 받습니다(수백 MB)."
-        d="$HOME/.cache/udally-stt"; run mkdir -p "$d"
+        d="$HOME/.cache/udally-link"; run mkdir -p "$d"
         if [ "$DRY" != 1 ]; then
           curl -fsSL --proto '=https' -o "$d/ct2-rocm.zip" "$CT2_ROCM_ZIP"
           echo "$CT2_ROCM_SHA256  $d/ct2-rocm.zip" | sha256sum -c - >/dev/null || fail "CTranslate2 ROCm 휠 검증 실패"
@@ -130,29 +139,45 @@ uv_install() {
         with="--with $whl --with rocm[libraries]==$ROCM_VERSION --index https://repo.amd.com/rocm/whl/$idx/"
       fi ;;
   esac
-  say "udally-stt $VERSION ($kind, uv)를 설치합니다."
+  legacy_cleanup
+  say "udally-link $VERSION ($kind, uv)를 설치합니다."
   # shellcheck disable=SC2086
-  run uv tool install --force --python 3.12 "udally-stt$extra @ $src" $with
-  run env UDALLY_URL="$UDALLY_URL" udally-stt connect --until-linked
+  run uv tool install --force --python 3.12 "udally-link$extra @ $src" $with
+  run env UDALLY_URL="$UDALLY_URL" udally-link connect --until-linked
   autostart
 }
 
+# udally-stt 시절 uv 도구·자동 시작을 지운다. 연결 토큰(~/.config/udally-stt)은 udally-link가 옮겨 쓴다.
+legacy_cleanup() {
+  [ -x "$HOME/.local/bin/$LEGACY" ] || return 0
+  say "옛 이름 $LEGACY을 지우고 udally-link로 바꿉니다(연결 토큰은 그대로 옮겨 씁니다)."
+  f="$HOME/Library/LaunchAgents/kr.sio2.$LEGACY.plist"
+  if [ -f "$f" ]; then run launchctl unload "$f" 2>/dev/null || true; run rm -f "$f"; fi
+  f="$HOME/.config/systemd/user/$LEGACY.service"
+  if [ -f "$f" ]; then
+    run systemctl --user disable --now "$LEGACY.service" || true
+    run rm -f "$f"
+    run systemctl --user daemon-reload || true
+  fi
+  run uv tool uninstall "$LEGACY" || true
+}
+
 autostart() {
-  bin="$HOME/.local/bin/udally-stt"
+  bin="$HOME/.local/bin/udally-link"
   if [ "$(uname -s)" = Darwin ]; then
-    f="$HOME/Library/LaunchAgents/kr.sio2.udally-stt.plist"
+    f="$HOME/Library/LaunchAgents/kr.sio2.udally-link.plist"
     run mkdir -p "$(dirname "$f")"
     if [ "$DRY" = 1 ]; then say "[dry-run] write $f"; else cat > "$f" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>kr.sio2.udally-stt</string>
+  <key>Label</key><string>kr.sio2.udally-link</string>
   <key>ProgramArguments</key><array><string>$bin</string><string>connect</string></array>
   <key>EnvironmentVariables</key><dict><key>UDALLY_URL</key><string>$UDALLY_URL</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-  <key>StandardOutPath</key><string>$HOME/Library/Logs/udally-stt.log</string>
-  <key>StandardErrorPath</key><string>$HOME/Library/Logs/udally-stt.log</string>
+  <key>StandardOutPath</key><string>$HOME/Library/Logs/udally-link.log</string>
+  <key>StandardErrorPath</key><string>$HOME/Library/Logs/udally-link.log</string>
 </dict></plist>
 EOF
     fi
@@ -162,14 +187,14 @@ EOF
     return
   fi
   if ! systemctl --user show-environment >/dev/null 2>&1; then
-    say "systemd 사용자 세션이 없어 자동 시작 등록을 건너뜁니다. 직접 켜기: udally-stt connect"
+    say "systemd 사용자 세션이 없어 자동 시작 등록을 건너뜁니다. 직접 켜기: udally-link connect"
     return
   fi
-  f="$HOME/.config/systemd/user/udally-stt.service"
+  f="$HOME/.config/systemd/user/udally-link.service"
   run mkdir -p "$(dirname "$f")"
   if [ "$DRY" = 1 ]; then say "[dry-run] write $f"; else cat > "$f" <<EOF
 [Unit]
-Description=udally-stt (유달리 전사 서버 연결)
+Description=udally-link (유달리 전사 서버 연결)
 After=network-online.target
 
 [Service]
@@ -185,9 +210,9 @@ WantedBy=default.target
 EOF
   fi
   run systemctl --user daemon-reload
-  run systemctl --user enable --now udally-stt.service
-  run systemctl --user restart udally-stt.service
-  say "로그인할 때 자동으로 켜집니다(systemd --user). 상태: systemctl --user status udally-stt"
+  run systemctl --user enable --now udally-link.service
+  run systemctl --user restart udally-link.service
+  say "로그인할 때 자동으로 켜집니다(systemd --user). 상태: systemctl --user status udally-link"
 }
 
 kind=$(gpu_kind)

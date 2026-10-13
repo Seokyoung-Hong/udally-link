@@ -8,7 +8,7 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-os.environ["STT_DEVICE"] = "cpu"
+os.environ["LINK_DEVICE"] = "cpu"
 import backends  # noqa: E402
 from server import plan  # noqa: E402
 
