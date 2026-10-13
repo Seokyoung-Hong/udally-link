@@ -150,6 +150,8 @@ function UvInstall($kind) {
     }
   }
   Say "udally-link $Version ($kind, uv)를 설치합니다."
+  # 실행 중이면 Windows가 exe를 잠가 uv가 덮어쓰지 못한다(업데이트 실패). 설치 전에 끈다(자식 python까지).
+  if (-not $Dry) { Get-Process -Name 'udally-link' -ErrorAction SilentlyContinue | ForEach-Object { & taskkill.exe /PID $_.Id /T /F 2>$null | Out-Null } }
   if ((Run uv (@('tool', 'install', '--force', '--python', '3.12', "udally-link$extra @ $src") + $with)) -ne 0) { throw 'uv 설치에 실패했습니다.' }
   $env:UDALLY_URL = $UdallyUrl
   $exe = Join-Path $bin 'udally-link.exe'
