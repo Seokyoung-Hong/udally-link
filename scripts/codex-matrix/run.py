@@ -79,10 +79,11 @@ def one(ver: str, auth_dir: Path) -> dict:
             "utf-8", "replace")
         events = r.stdout.decode("utf-8", "replace")
         ok, types = judge(events, answer, marker)
-        fails = [str((json.loads(x).get("error") or {}).get("message", ""))[:200] for x in events.splitlines()
+        fails = [str((json.loads(x).get("error") or {}).get("message", "")).replace(marker, "<표식>") for x in events.splitlines()
                  if '"turn.failed"' in x]  # 실행 실패 이유(도구 위반과 구분). 토큰은 사건에 없다
         return {"ok": ok and r.returncode == 0, "rc": r.returncode, "item_types": types,
-                "answer_head": answer.strip()[:60], "turn_failed": fails, "disabled": len([f for f in feats if f not in link.CODEX_KEEP]),
+                "answer": answer.replace(marker, "<표식>"), "turn_failed": fails,  # 답 전체(표식만 가림)
+                "disabled": len([f for f in feats if f not in link.CODEX_KEEP]),
                 "features_sha": hashlib.sha256("\n".join(sorted(feats)).encode()).hexdigest()[:16]}
     finally:
         sh("docker", "rm", "-f", name, check=False)

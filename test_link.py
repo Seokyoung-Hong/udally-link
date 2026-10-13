@@ -476,14 +476,27 @@ link.CodexLogin(8, "login", "t", url=core.url).go()
 assert len(lg) == n + 1 and time.monotonic() - t0 < 20
 assert not any("WXYZ" in m for m in _seen_logs)
 link.log.removeHandler(_cap)
-# heartbeat 응답 codex_login → 스레드 하나(같은 id는 다시 시작하지 않음)
-core.codex_login = lambda b: (lg.append(b), (409, {}))[1]
+# heartbeat 응답 codex_login → 스레드 하나. 같은 요청이 도는 중이면 반복 응답을 건너뛰고,
+# 끝난 뒤에는 같은 id(유달리 행은 PC당 하나)라도 다시 시작한다: login 5 → logout 5 → login 5 = 세 번
+started, gate = [], threading.Event()
+_go = link.CodexLogin.go
+link.CodexLogin.go = lambda self: (started.append((self.id, self.action)), gate.wait(5))
+a.handle({"codex_login": {"id": 5}})
+a.handle({"codex_login": {"id": 5}})  # 도는 중 반복 → 무시
+gate.set()
+a.codex_login.done.wait(5)
+a.handle({"codex_logout": {"id": 5}})
+a.codex_login.done.wait(5)
+a.handle({"codex_login": {"id": 5}})
+a.codex_login.done.wait(5)
+assert started == [(5, "login"), (5, "logout"), (5, "login")], started
+gate.clear()
 a.handle({"codex_login": {"id": 9}})
 first = a.codex_login
-a.handle({"codex_login": {"id": 9}})
-assert a.codex_login is first and first.id == 9 and first.action == "login"
-a.handle({"codex_logout": {"id": 10}})
-assert a.codex_login.id == 10 and a.codex_login.action == "logout" and first.cancel.is_set()
+a.handle({"codex_logout": {"id": 9}})  # 도는 중 다른 동작 → 옛것을 끄고 새로
+assert a.codex_login is not first and a.codex_login.action == "logout" and first.cancel.is_set()
+gate.set()
+link.CodexLogin.go = _go
 time.sleep(1)
 _docker, link.IN_DOCKER = link.IN_DOCKER, True  # Docker 설치는 Codex 불가
 assert link.codex_device() == {"docker": True}

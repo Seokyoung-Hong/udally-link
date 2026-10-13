@@ -720,7 +720,13 @@ class CodexLogin:
 
     def __init__(self, login_id: int, action: str, token: str, url=None, sleep=time.sleep):
         self.id, self.action, self.token, self.url, self.sleep = login_id, action, token, url, sleep
-        self.cancel = threading.Event()
+        self.cancel, self.done = threading.Event(), threading.Event()
+
+    def run(self) -> None:
+        try:
+            self.go()
+        finally:
+            self.done.set()
 
     def report(self, body: dict) -> int:
         try:
@@ -868,12 +874,16 @@ class Agent:
             codex_versions = {str(v) for v in r["codex_versions"]}
         for action in ("login", "logout"):  # 웹에서 시작한 Codex 로그인·로그아웃(한 번에 하나, 새 요청이 옛것을 끈다)
             req = r.get(f"codex_{action}")
-            if (isinstance(req, dict) and isinstance(req.get("id"), int)
-                    and not (self.codex_login and self.codex_login.id == req["id"])):
-                if self.codex_login:
-                    self.codex_login.cancel.set()
-                self.codex_login = CodexLogin(req["id"], action, self.link["token"], url=self.link.get("url"))
-                threading.Thread(target=self.codex_login.go, daemon=True).start()
+            if not (isinstance(req, dict) and isinstance(req.get("id"), int)):
+                continue
+            # 유달리의 요청 행은 PC당 하나라 id가 늘 같다 — 같은 요청이 아직 도는 중일 때만 건너뛴다(heartbeat 반복).
+            cur = self.codex_login
+            if cur and not cur.done.is_set() and cur.id == req["id"] and cur.action == action:
+                continue
+            if cur:
+                cur.cancel.set()
+            self.codex_login = CodexLogin(req["id"], action, self.link["token"], url=self.link.get("url"))
+            threading.Thread(target=self.codex_login.run, daemon=True).start()
         if r.get("pull"):
             try:
                 server.pull(r["pull"])
