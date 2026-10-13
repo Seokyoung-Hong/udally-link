@@ -526,7 +526,11 @@ def codex_prompt(messages: list) -> str:
 
 
 def _codex_env() -> dict:
-    return {k: os.environ[k] for k in CODEX_ENV if k in os.environ}
+    e = {k: os.environ[k] for k in CODEX_ENV if k in os.environ}
+    # udally-link만 다른 Codex 계정을 쓰게 한다(사용자 CODEX_HOME·평소 codex 기본 계정은 그대로).
+    if home := env("LINK_CODEX_HOME"):
+        e["CODEX_HOME"] = home
+    return e
 
 
 def _kill_tree(p: subprocess.Popen) -> None:
