@@ -486,7 +486,7 @@ def codex_bin() -> str | None:
 
 
 # 도구가 꺼지는 것을 실제로 시험한 Codex 버전만 쓴다. 새 버전은 다시 시험한 뒤 여기에 더한다.
-CODEX_TESTED = ("0.161.",)
+CODEX_TESTED = ("0.161.0",)  # 정확히 일치(패치판·사전 배포판도 다시 시험한 뒤 더한다)
 _codex_seen: dict = {}  # 실행 파일 → (확인 시각, 버전) — heartbeat마다 node를 띄우지 않게 잠시 기억
 
 
@@ -495,6 +495,8 @@ def codex_version(exe: str) -> str:
         r = subprocess.run([exe, "--version"], capture_output=True, stdin=subprocess.DEVNULL, timeout=30,
                            env=_codex_env())
     except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if r.returncode != 0:
         return ""
     m = re.search(r"\d+\.\d+\.\d+\S*", r.stdout.decode("utf-8", "replace"))
     return m.group(0) if m else ""
@@ -508,11 +510,11 @@ def codex_ready(fresh: bool = False) -> str | None:
     at, ver = _codex_seen.get(exe, (0.0, None))
     if fresh or ver is None or time.monotonic() - at > 600:
         ver = codex_version(exe)
-        if ver != _codex_seen.get(exe, (0, None))[1] and not ver.startswith(CODEX_TESTED):
+        if ver != _codex_seen.get(exe, (0, None))[1] and ver not in CODEX_TESTED:
             log.warning("Codex %s는 시험하지 않은 버전이라 Codex 작업을 받지 않습니다(시험한 버전: %s)",
-                        ver or "(버전 확인 실패)", ", ".join(v + "x" for v in CODEX_TESTED))
+                        ver or "(버전 확인 실패)", ", ".join(CODEX_TESTED))
         _codex_seen[exe] = (time.monotonic(), ver)
-    return exe if ver.startswith(CODEX_TESTED) else None
+    return exe if ver in CODEX_TESTED else None
 
 
 def codex_prompt(messages: list) -> str:
@@ -545,11 +547,15 @@ def _kill_tree(p: subprocess.Popen) -> None:
 
 
 def _watch_events(stream, tool_seen: threading.Event) -> None:
-    """codex exec --json 사건 줄을 읽다가 글 아닌 항목(명령 실행·파일·검색·MCP 등)이 보이면 표시한다."""
+    """codex exec --json 사건 줄을 읽다가 글 아닌 항목(명령 실행·파일·검색·MCP 등)이 보이면 표시한다.
+    읽을 수 없는 줄도 도구로 본다(모르는 출력이면 결과를 버리는 쪽이 안전하다)."""
     for line in stream:
+        if not line.strip():
+            continue
         try:
             item = (json.loads(line).get("item") or {}).get("type")
         except (ValueError, AttributeError):
+            tool_seen.set()
             continue
         if item and item not in CODEX_TEXT_ITEMS:
             tool_seen.set()
@@ -597,6 +603,8 @@ def codex_ask(job: dict, cancel: threading.Event) -> str:
                     break
                 time.sleep(0.2)
             watcher.join(timeout=2)  # 끝나기 직전 사건 줄까지 본다
+            if watcher.is_alive():  # 사건 줄을 끝까지 못 봤으면 결과를 믿지 않는다
+                tool_seen.set()
             if cancel.is_set():
                 raise AiFail("cancelled")
             if tool_seen.is_set():

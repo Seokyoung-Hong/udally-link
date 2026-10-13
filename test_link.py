@@ -329,6 +329,8 @@ print(json.dumps({"type": "item.completed", "item": {"type": "reasoning"}}), flu
 if mode == "tool":
     print(json.dumps({"type": "item.started", "item": {"type": "command_execution", "command": "type secret"}}), flush=True)
     time.sleep(30)
+if mode == "garbled":
+    print("not json {", flush=True)  # 읽을 수 없는 사건 줄
 if mode == "slow":
     time.sleep(60)
 if mode == "fail":
@@ -366,7 +368,7 @@ assert "--json" in a1 and a1[a1.index("shell_tool") - 1] == "--disable" and 'web
 assert "UDALLY_SECRET_FOR_TEST" not in seen["env"] and "LINK_CODEX_BIN" not in seen["env"]
 assert link.AiJob({**cj, "model": "gpt-5.1-codex"}, "t", url=core.url).go(no_sleep) == "done"
 assert json.loads((fake / "log.json").read_text(encoding="utf-8"))["argv"][-3:] == ["-m", "gpt-5.1-codex", "-"]
-for mode, code in (("unauth", "codex_auth"), ("fail", "pc_error"), ("empty", "bad_output"), ("tool", "bad_output")):
+for mode, code in (("unauth", "codex_auth"), ("fail", "pc_error"), ("empty", "bad_output"), ("tool", "bad_output"), ("garbled", "bad_output")):
     set_mode(mode)
     assert link.AiJob(cj, "t", url=core.url).go(no_sleep) == "failed"
     assert core.patches[-1] == {"status": "failed", "error": code}, (mode, core.patches[-1])
@@ -387,7 +389,9 @@ os.environ["LINK_CODEX_BIN"] = str(fake / ("codex.bat" if _sys.platform == "win3
 assert a.beat()["codex"] == 1  # 10분 동안은 기억한 버전(heartbeat마다 node를 띄우지 않음)
 assert link.AiJob(cj, "t", url=core.url).go(no_sleep) == "failed" and core.patches[-1]["error"] == "codex_missing"
 assert a.beat()["codex"] == 0  # 실행 직전 확인이 기억도 새로 고친다
-(fake / "ver.txt").write_text("0.161.3")
+(fake / "ver.txt").write_text("0.161.3")  # 같은 0.161이라도 시험하지 않은 패치판은 막는다(정확히 일치)
+assert link.AiJob(cj, "t", url=core.url).go(no_sleep) == "failed" and core.patches[-1]["error"] == "codex_missing"
+(fake / "ver.txt").write_text("0.161.0")
 assert link.AiJob(cj, "t", url=core.url).go(no_sleep) == "done" and a.beat()["codex"] == 1
 # 시간 상한·취소: 프로세스를 끈다
 set_mode("slow")
