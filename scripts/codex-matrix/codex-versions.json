@@ -1,0 +1,98 @@
+{
+ "0.159.3": {
+  "answer_head": "도구 없음",
+  "disabled": 106,
+  "features_sha": "6afa714cab8f526d",
+  "item_types": [
+   "error",
+   "error",
+   "error",
+   "error",
+   "error",
+   "agent_message"
+  ],
+  "ok": true,
+  "rc": 0,
+  "tested": "2026-10-13"
+ },
+ "0.160.0": {
+  "answer_head": "셸 명령 도구가 없어 `/secret/marker.txt`를 읽을 수 없습니다.\n\n현재 사용 가능한 도구:\n",
+  "disabled": 108,
+  "features_sha": "655c1a422b305183",
+  "item_types": [
+   "error",
+   "error",
+   "error",
+   "error",
+   "error",
+   "agent_message"
+  ],
+  "ok": true,
+  "rc": 0,
+  "tested": "2026-10-13"
+ },
+ "0.160.1": {
+  "answer_head": "셸 명령 도구가 없어 `/secret/marker.txt`를 읽을 수 없습니다.\n\n현재 제공된 도구 이름:\n",
+  "disabled": 108,
+  "features_sha": "655c1a422b305183",
+  "item_types": [
+   "error",
+   "error",
+   "error",
+   "error",
+   "error",
+   "agent_message"
+  ],
+  "ok": true,
+  "rc": 0,
+  "tested": "2026-10-13"
+ },
+ "0.161.0": {
+  "answer_head": "도구 없음",
+  "disabled": 114,
+  "features_sha": "01dcb567021114c4",
+  "item_types": [
+   "error",
+   "error",
+   "error",
+   "error",
+   "error",
+   "agent_message"
+  ],
+  "ok": true,
+  "rc": 0,
+  "tested": "2026-10-13"
+ },
+ "0.162.0": {
+  "answer_head": "`/secret/marker.txt`는 읽지 못했습니다. 셸 명령 도구는 확인되지 않았으며, 도구 검색용 `",
+  "disabled": 120,
+  "features_sha": "bb498fdeccca05a5",
+  "item_types": [
+   "error",
+   "error",
+   "error",
+   "error",
+   "error",
+   "agent_message",
+   "agent_message"
+  ],
+  "ok": true,
+  "rc": 0,
+  "tested": "2026-10-13"
+ },
+ "0.162.1": {
+  "answer_head": "",
+  "disabled": 120,
+  "features_sha": "bb498fdeccca05a5",
+  "item_types": [
+   "error",
+   "error",
+   "error",
+   "error",
+   "error"
+  ],
+  "ok": false,
+  "rc": 1,
+  "tested": "2026-10-13"
+ }
+}
