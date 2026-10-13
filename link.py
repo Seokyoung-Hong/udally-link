@@ -485,6 +485,36 @@ def codex_bin() -> str | None:
     return env("LINK_CODEX_BIN") or shutil.which("codex")
 
 
+# 도구가 꺼지는 것을 실제로 시험한 Codex 버전만 쓴다. 새 버전은 다시 시험한 뒤 여기에 더한다.
+CODEX_TESTED = ("0.161.",)
+_codex_seen: dict = {}  # 실행 파일 → (확인 시각, 버전) — heartbeat마다 node를 띄우지 않게 잠시 기억
+
+
+def codex_version(exe: str) -> str:
+    try:
+        r = subprocess.run([exe, "--version"], capture_output=True, stdin=subprocess.DEVNULL, timeout=30,
+                           env=_codex_env())
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    m = re.search(r"\d+\.\d+\.\d+\S*", r.stdout.decode("utf-8", "replace"))
+    return m.group(0) if m else ""
+
+
+def codex_ready(fresh: bool = False) -> str | None:
+    """시험한 버전의 Codex가 있으면 실행 파일 경로. fresh면 기억을 쓰지 않는다(실행 직전, 그 사이 업데이트 대비)."""
+    exe = codex_bin()
+    if not exe:
+        return None
+    at, ver = _codex_seen.get(exe, (0.0, None))
+    if fresh or ver is None or time.monotonic() - at > 600:
+        ver = codex_version(exe)
+        if ver != _codex_seen.get(exe, (0, None))[1] and not ver.startswith(CODEX_TESTED):
+            log.warning("Codex %s는 시험하지 않은 버전이라 Codex 작업을 받지 않습니다(시험한 버전: %s)",
+                        ver or "(버전 확인 실패)", ", ".join(v + "x" for v in CODEX_TESTED))
+        _codex_seen[exe] = (time.monotonic(), ver)
+    return exe if ver.startswith(CODEX_TESTED) else None
+
+
 def codex_prompt(messages: list) -> str:
     """system·user(·assistant)를 한 프롬프트로. 역할 경계는 [[표지]]로 남기고, 내용 속 표지 흉내는 깨뜨린다(§11.3)."""
     roles = {"system": "지침", "user": "요청", "assistant": "이전 답"}
@@ -523,9 +553,9 @@ def _watch_events(stream, tool_seen: threading.Event) -> None:
 
 def codex_ask(job: dict, cancel: threading.Event) -> str:
     """codex exec(읽기 전용 샌드박스·승인 없음·빈 임시 폴더·git 검사 건너뜀·도구 끔) → 마지막 메시지. 실패는 AiFail."""
-    exe = codex_bin()
+    exe = codex_ready(fresh=True)
     if not exe:
-        raise AiFail("codex_missing")
+        raise AiFail("codex_missing")  # 없음·시험하지 않은 버전
     model = job.get("model") or ""
     if model and not CODEX_MODEL.fullmatch(model):
         raise AiFail("model_not_found")
@@ -658,7 +688,7 @@ class Agent:
     def beat(self) -> dict:
         return {"version": server.VERSION, "job_id": self.job.job["id"] if self.job else None,
                 "concurrency": server.CONCURRENCY, "device": device_info(), "models": server.models_data(),
-                "ai": 1, "codex": 1 if codex_bin() else 0,  # Codex CLI가 있을 때만 Codex 작업을 받는다
+                "ai": 1, "codex": 1 if codex_ready() else 0,  # 시험한 버전의 Codex CLI가 있을 때만 Codex 작업을 받는다
                 "ai_job_id": self.ai.job["id"] if self.ai else None}
 
     def handle(self, r: dict) -> None:

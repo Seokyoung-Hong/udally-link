@@ -317,6 +317,9 @@ from pathlib import Path
 here = Path(__file__).parent  # 환경변수는 Codex에 넘기지 않으므로 파일로 주고받는다
 mode = (here / "mode.txt").read_text(encoding="utf-8").strip() if (here / "mode.txt").exists() else "ok"
 log = here / "log.json"
+if sys.argv[1:2] == ["--version"]:
+    print("codex-cli " + ((here / "ver.txt").read_text().strip() if (here / "ver.txt").exists() else "0.161.0"))
+    sys.exit(0)
 if sys.argv[1:3] == ["login", "status"]:
     sys.exit(1 if mode == "unauth" else 0)
 prompt = sys.stdin.buffer.read().decode("utf-8")
@@ -379,6 +382,13 @@ os.environ["LINK_CODEX_BIN"] = ""
 assert a.beat()["codex"] == 0
 link.shutil.which = _which
 os.environ["LINK_CODEX_BIN"] = str(fake / ("codex.bat" if _sys.platform == "win32" else "codex"))
+# 시험하지 않은 Codex 버전은 받지 않는다: heartbeat 0, 실행 직전에도 다시 확인
+(fake / "ver.txt").write_text("0.162.1")
+assert a.beat()["codex"] == 1  # 10분 동안은 기억한 버전(heartbeat마다 node를 띄우지 않음)
+assert link.AiJob(cj, "t", url=core.url).go(no_sleep) == "failed" and core.patches[-1]["error"] == "codex_missing"
+assert a.beat()["codex"] == 0  # 실행 직전 확인이 기억도 새로 고친다
+(fake / "ver.txt").write_text("0.161.3")
+assert link.AiJob(cj, "t", url=core.url).go(no_sleep) == "done" and a.beat()["codex"] == 1
 # 시간 상한·취소: 프로세스를 끈다
 set_mode("slow")
 t0 = time.monotonic()
