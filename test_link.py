@@ -227,7 +227,7 @@ class FakeAi:
 fai = FakeAi()
 aj = {"id": 77, "url": f"http://127.0.0.1:{fai.port}/v1", "model": "qwen3", "api_key": "sk-local",
       "messages": [{"role": "user", "content": "자료"}], "max_tokens": 200, "temperature": 0.3,
-      "response_format": {"type": "json_object"}, "timeout_s": 5}
+      "response_format": {"type": "json_object"}, "reasoning_effort": "none", "timeout_s": 5}
 
 # 허용 주소: 루프백·localhost·host.docker.internal, LAN은 UDALLY_AI_HOSTS로만
 assert link.ai_endpoint("http://localhost:11434/v1") == "http://localhost:11434/v1/chat/completions"
@@ -252,9 +252,10 @@ assert core.patches[-1] == {"status": "done", "content": '{"options":["가"]}', 
 path, sent, auth = fai.seen[-1]
 assert path == "/v1/chat/completions" and auth == "Bearer sk-local" and sent["stream"] is False
 assert sent["response_format"] == {"type": "json_object"} and sent["model"] == "qwen3" and sent["max_tokens"] == 200
+assert sent["reasoning_effort"] == "none"
 # json_object를 모르는 서버(400) → 한 번만 없이 다시
 fai.no_json_mode = True
-assert link.AiJob(aj, "t", url=core.url).go(no_sleep) == "done" and "response_format" not in fai.seen[-1][1]
+assert link.AiJob(aj, "t", url=core.url).go(no_sleep) == "done" and not {"response_format", "reasoning_effort"} & fai.seen[-1][1].keys()
 fai.no_json_mode = False
 # 거부 주소·리다이렉트·연결 실패
 assert link.AiJob({**aj, "url": "http://10.0.0.1/v1"}, "t", url=core.url).go(no_sleep) == "failed"

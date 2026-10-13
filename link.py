@@ -465,14 +465,17 @@ class AiJob:
         if not endpoint:
             raise AiFail("blocked_address")
         body = {"model": j.get("model") or "", "messages": j.get("messages") or [], "stream": False,
-                **{k: j[k] for k in ("max_tokens", "temperature", "response_format") if j.get(k) is not None}}
+                **{k: j[k] for k in ("max_tokens", "temperature", "response_format", "reasoning_effort")
+                   if j.get(k) is not None}}
         timeout = float(j.get("timeout_s") or 30)
         try:
             r = ai_post(endpoint, body, j.get("api_key") or "", timeout)
         except AiFail as e:
-            if e.code != "http_4xx" or "response_format" not in body:
+            if e.code != "http_4xx" or not ({"response_format", "reasoning_effort"} & body.keys()):
                 raise
-            body.pop("response_format")  # json_object를 모르는 서버: 한 번만 없이 다시(§11.2)
+            # json_object·reasoning_effort를 모르는 서버: 한 번만 둘 다 빼고 다시(§11.2)
+            body.pop("response_format", None)
+            body.pop("reasoning_effort", None)
             r = ai_post(endpoint, body, j.get("api_key") or "", timeout)
         try:
             content = r["choices"][0]["message"]["content"]
