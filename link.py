@@ -468,7 +468,7 @@ CODEX_MODEL = re.compile(r"[A-Za-z0-9._:/-]{1,100}")  # 명령 줄로 넘기므�
 CODEX_OFF = ("shell_tool", "unified_exec", "apps", "plugins", "remote_plugin", "browser_use", "browser_use_external",
              "computer_use", "in_app_browser", "image_generation", "view_image", "code_mode_host", "skill_search",
              "tool_suggest", "sleep_tool", "goals")
-CODEX_TEXT_ITEMS = {"agent_message", "reasoning"}
+CODEX_TEXT_ITEMS = {"agent_message", "reasoning", "error"}  # error = CLI 경고·기동 오류(도구 아님) — 결과를 버리지 않는다
 # Codex에 넘길 환경변수(실행·로그인 위치·프록시·인증서만). 나머지(다른 서비스 키 등)는 넘기지 않는다.
 CODEX_ENV = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "OS", "PROCESSOR_ARCHITECTURE",
              "NUMBER_OF_PROCESSORS", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME", "USER", "LOGNAME", "APPDATA",
