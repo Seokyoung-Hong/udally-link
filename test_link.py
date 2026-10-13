@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """link.py 검사(가짜 core 서버). 실행: uv run --no-project --with "faster-whisper>=1.1,<2" --with "av<17" --with fastapi,psutil,python-multipart python test_link.py
-기기 인증·토큰 파일·heartbeat(pull·job·401·426·5xx 재연결)·구간 슬라이스(±20ms)·구간 실패(503)·취소·DELETE /self."""
+기기 인증·토큰 파일·heartbeat(pull·job·401·426·5xx 재연결)·구간 슬라이스(±20ms)·구간 실패(503)·취소·DELETE /self·AI 거쳐 보내기(허용 주소·Docker·리다이렉트·취소·재시도)."""
 
 import json
 import os
@@ -34,7 +34,8 @@ def tone_wav(path: Path, seconds: float) -> None:
 # ---------- 가짜 core ----------
 class Core:
     def __init__(self):
-        self.calls, self.patches, self.token_polls = [], [], 0
+        self.calls, self.patches, self.patch_paths, self.token_polls = [], [], [], 0
+        self.ai_report = lambda body: (200, {"status": body["status"]})
         self.heartbeat = lambda body: (200, {"poll_s": 5, "pull": None, "job": None})
         self.progress = lambda body: (200, {"status": "running", "cancel": False})
         self.track = tmp / "track.wav"
@@ -73,6 +74,9 @@ class Core:
             def do_PATCH(self):
                 b = self.body()
                 core.patches.append(b)
+                core.patch_paths.append(self.path)
+                if "/ai-jobs/" in self.path:
+                    return self.reply(*core.ai_report(b))
                 self.reply(*(core.progress(b) if "status" not in b else (200, {"status": b["status"], "cancel": False})))
 
             def do_GET(self):
@@ -183,6 +187,108 @@ for _ in range(100):  # 작업 스레드가 도는 동안 job_id를 싣고, 새 
     time.sleep(0.05)
 assert any(b.get("job_id") == 42 for p, b, _ in core.calls if p.endswith("/heartbeat")) or core.patches[-1]["status"] == "done"
 assert core.patches[-1]["status"] == "done" and a.job is None
+
+# ---------- AI 작업(IMPL-PLAN-12 §6.4): 허용 주소·Docker 바꿈·리다이렉트 거부·취소·재시도·전사와 동시 ----------
+class FakeAi:
+    def __init__(self):
+        self.seen, self.gate = [], threading.Event()
+        self.gate.set()
+        self.no_json_mode = False
+        ai = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                b = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+                ai.seen.append((self.path, b, self.headers.get("Authorization")))
+                ai.gate.wait(5)
+                if self.path.startswith("/redirect"):
+                    self.send_response(302)
+                    self.send_header("Location", "http://example.com/v1/chat/completions")
+                    self.send_header("Content-Length", "0")
+                    return self.end_headers()
+                if ai.no_json_mode and "response_format" in b:
+                    code, data = 400, b"{}"
+                else:
+                    code, data = 200, json.dumps({"choices": [{"message": {"content": '{"options":["가"]}'}}],
+                                                  "usage": {"total_tokens": 9}}).encode()
+                self.send_response(code)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.http = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.port = self.http.server_port
+        threading.Thread(target=self.http.serve_forever, daemon=True).start()
+
+
+fai = FakeAi()
+aj = {"id": 77, "url": f"http://127.0.0.1:{fai.port}/v1", "model": "qwen3", "api_key": "sk-local",
+      "messages": [{"role": "user", "content": "자료"}], "max_tokens": 200, "temperature": 0.3,
+      "response_format": {"type": "json_object"}, "timeout_s": 5}
+
+# 허용 주소: 루프백·localhost·host.docker.internal, LAN은 UDALLY_AI_HOSTS로만
+assert link.ai_endpoint("http://localhost:11434/v1") == "http://localhost:11434/v1/chat/completions"
+assert link.ai_endpoint("http://[::1]:8000/v1/").endswith("[::1]:8000/v1/chat/completions")
+for bad in ("http://192.168.0.5:11434/v1", "https://api.openai.com/v1", "http://u:p@localhost/v1",
+            "ftp://localhost/v1", "http://localhost/v1?x=1", "http://169.254.169.254/v1", "", "http://[bad"):
+    assert link.ai_endpoint(bad) is None, bad
+os.environ["UDALLY_AI_HOSTS"] = "192.168.0.5, gpu.lan"
+assert link.ai_endpoint("http://192.168.0.5:11434/v1") and link.ai_endpoint("http://gpu.lan/v1")
+del os.environ["UDALLY_AI_HOSTS"]
+# Docker 안이면 루프백을 호스트로
+real_docker = link.in_docker
+link.in_docker = lambda: True
+assert link.ai_endpoint("http://127.0.0.1:1234/v1") == "http://host.docker.internal:1234/v1/chat/completions"
+assert link.ai_endpoint("http://localhost:1234/v1").startswith("http://host.docker.internal:1234/")
+link.in_docker = real_docker
+
+# 성공: 결과 PATCH 한 번, 키는 Authorization으로만
+assert link.AiJob(aj, "udl_secret_token_value", url=core.url).go(no_sleep) == "done"
+assert core.patch_paths[-1] == "/api/integrations/stt/ai-jobs/77"
+assert core.patches[-1] == {"status": "done", "content": '{"options":["가"]}', "usage": {"total_tokens": 9}}
+path, sent, auth = fai.seen[-1]
+assert path == "/v1/chat/completions" and auth == "Bearer sk-local" and sent["stream"] is False
+assert sent["response_format"] == {"type": "json_object"} and sent["model"] == "qwen3" and sent["max_tokens"] == 200
+# json_object를 모르는 서버(400) → 한 번만 없이 다시
+fai.no_json_mode = True
+assert link.AiJob(aj, "t", url=core.url).go(no_sleep) == "done" and "response_format" not in fai.seen[-1][1]
+fai.no_json_mode = False
+# 거부 주소·리다이렉트·연결 실패
+assert link.AiJob({**aj, "url": "http://10.0.0.1/v1"}, "t", url=core.url).go(no_sleep) == "failed"
+assert core.patches[-1] == {"status": "failed", "error": "blocked_address"}
+assert link.AiJob({**aj, "url": f"http://127.0.0.1:{fai.port}/redirect"}, "t", url=core.url).go(no_sleep) == "failed"
+assert core.patches[-1]["error"] == "blocked_address"
+assert link.AiJob({**aj, "url": "http://127.0.0.1:9/v1"}, "t", url=core.url).go(no_sleep) == "failed"
+assert core.patches[-1]["error"] == "connect_failed"
+# 결과 보고 재시도: 처음 두 번 5xx(Offline) → 세 번째 성공
+tries = []
+core.ai_report = lambda b: (tries.append(b), (503, {}) if len(tries) < 3 else (200, {"status": "done"}))[1]
+assert link.AiJob(aj, "t", url=core.url).go(no_sleep) == "done" and len(tries) == 3
+core.ai_report = lambda b: (200, {"status": b["status"]})
+
+# heartbeat: ai 능력·ai_job_id, 전사 작업과 동시에 받고, ai_cancel이면 cancelled
+fai.gate.clear()  # AI 응답을 붙잡아 둔다
+core.heartbeat = lambda b: (200, {"poll_s": 5, "pull": None, "job": None, "ai_job": aj})
+a = link.Agent(link.load_link(), sleep=no_sleep, run=fake_run)
+a.job = object.__new__(link.Job)  # 전사 중인 척
+a.job.job = {"id": 5}
+assert a.once() is None and a.ai is not None
+beat = [b for p, b, _ in core.calls if p.endswith("/heartbeat")][-1]
+assert beat["ai"] == 1 and beat["ai_job_id"] is None and beat["job_id"] == 5
+core.heartbeat = lambda b: (200, {"poll_s": 5, "pull": None, "job": None, "ai_cancel": True})
+assert a.once() is None and a.ai.cancel.is_set()
+assert [b for p, b, _ in core.calls if p.endswith("/heartbeat")][-1]["ai_job_id"] == 77
+fai.gate.set()
+for _ in range(100):
+    if a.ai is None:
+        break
+    time.sleep(0.05)
+assert a.ai is None and core.patches[-1] == {"status": "cancelled"}
+a.job = None
+assert not any("sk-local" in str(c) for c in core.calls) and not any("sk-local" in str(p) for p in core.patches)
 
 # ---------- 재연결: 5xx·네트워크 오류는 백오프, 성공하면 poll_s로 ----------
 core.heartbeat = lambda b: (503, {})

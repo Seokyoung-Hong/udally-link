@@ -7,6 +7,7 @@ udally-stt unlink                    스스로 끊기(DELETE /self) + 토큰 파
 """
 
 import contextlib
+import ipaddress
 import json
 import logging
 import os
@@ -18,6 +19,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -380,16 +382,151 @@ class Job:
         return status
 
 
+# ---------- AI 작업(IMPL-PLAN-12 §6.4): 유달리가 준 메시지를 이 PC 안의 AI 서버로 보내고 결과만 보고 ----------
+AI_HOSTS = {"localhost", "host.docker.internal"}  # + 루프백 IP. LAN 주소는 UDALLY_AI_HOSTS(쉼표)로만
+AI_MAX_BYTES = 1 << 20  # AI 응답 상한
+AI_ERRORS = {401: "auth_failed", 403: "auth_failed", 404: "model_not_found", 413: "too_large"}
+
+
+def in_docker() -> bool:
+    return Path("/.dockerenv").exists()
+
+
+def ai_endpoint(url: str) -> str | None:
+    """허용된 주소면 .../chat/completions, 아니면 None. Docker 안이면 루프백을 host.docker.internal로 바꾼다."""
+    try:
+        p = urllib.parse.urlsplit(url or "")
+        host, port = (p.hostname or "").lower(), p.port
+    except ValueError:
+        return None
+    if p.scheme not in ("http", "https") or p.username or p.password or p.query or p.fragment:
+        return None
+    try:
+        loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = False
+    extra = {h.strip().lower() for h in (env("UDALLY_AI_HOSTS") or "").split(",") if h.strip()}
+    if not (loopback or host in AI_HOSTS or host in extra):
+        return None
+    if in_docker() and (loopback or host == "localhost"):
+        host = "host.docker.internal"
+    netloc = f"[{host}]" if ":" in host else host
+    return urllib.parse.urlunsplit((p.scheme, netloc + (f":{port}" if port else ""),
+                                    p.path.rstrip("/") + "/chat/completions", "", ""))
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **kw):
+        return None  # 3xx는 HTTPError로 — 허용 주소 밖으로 끌려가지 않게
+
+
+_ai_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+
+
+class AiFail(Exception):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+def ai_post(endpoint: str, body: dict, api_key: str, timeout: float) -> dict:
+    req = urllib.request.Request(endpoint, method="POST", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json", "User-Agent": f"udally-stt/{server.VERSION}",
+                                          **({"Authorization": f"Bearer {api_key}"} if api_key else {})})
+    try:
+        with _ai_opener.open(req, timeout=timeout) as r:
+            data = r.read(AI_MAX_BYTES + 1)
+    except urllib.error.HTTPError as e:
+        code = AI_ERRORS.get(e.code) or ("blocked_address" if e.code < 400 else "http_5xx" if e.code >= 500 else "http_4xx")
+        raise AiFail(code) from None
+    except TimeoutError:
+        raise AiFail("timeout") from None
+    except (urllib.error.URLError, OSError) as e:
+        timed_out = isinstance(getattr(e, "reason", None), TimeoutError)
+        raise AiFail("timeout" if timed_out else "connect_failed") from None
+    if len(data) > AI_MAX_BYTES:
+        raise AiFail("too_large")
+    try:
+        return json.loads(data)
+    except ValueError:
+        raise AiFail("bad_output") from None
+
+
+class AiJob:
+    """AI 작업 하나(전사와 따로 도는 스레드, 한 번에 하나). 키·메시지·결과는 로그에 남기지 않는다."""
+
+    def __init__(self, job: dict, token: str, url=None):
+        self.job, self.token, self.url = job, token, url
+        self.cancel = threading.Event()
+
+    def ask(self) -> tuple[str, dict]:
+        j = self.job
+        endpoint = ai_endpoint(j.get("url"))
+        if not endpoint:
+            raise AiFail("blocked_address")
+        body = {"model": j.get("model") or "", "messages": j.get("messages") or [], "stream": False,
+                **{k: j[k] for k in ("max_tokens", "temperature", "response_format") if j.get(k) is not None}}
+        timeout = float(j.get("timeout_s") or 30)
+        try:
+            r = ai_post(endpoint, body, j.get("api_key") or "", timeout)
+        except AiFail as e:
+            if e.code != "http_4xx" or "response_format" not in body:
+                raise
+            body.pop("response_format")  # json_object를 모르는 서버: 한 번만 없이 다시(§11.2)
+            r = ai_post(endpoint, body, j.get("api_key") or "", timeout)
+        try:
+            content = r["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            raise AiFail("bad_output") from None
+        if not isinstance(content, str):
+            raise AiFail("bad_output")
+        return content, r.get("usage") if isinstance(r.get("usage"), dict) else {}
+
+    def finish(self, body: dict, sleep=time.sleep) -> None:
+        """끝날 때 한 번 PATCH. 끊기면 RESULT_RETRY_S까지 다시. 404·409(넘겨짐·끝남)는 버린다."""
+        until, n = time.monotonic() + RESULT_RETRY_S, 0
+        while True:
+            try:
+                st, _ = call("PATCH", f"/ai-jobs/{self.job['id']}", body, token=self.token, url=self.url)
+                if st == 413:
+                    call("PATCH", f"/ai-jobs/{self.job['id']}", {"status": "failed", "error": "too_large"},
+                         token=self.token, url=self.url)
+                return
+            except Offline:
+                n += 1
+                if time.monotonic() > until:
+                    log.error("AI 결과 보고를 포기합니다(작업 %s)", self.job["id"])
+                    return
+                sleep(backoff(n))
+
+    def go(self, sleep=time.sleep) -> str:
+        # ponytail: 진행 중인 HTTP 호출은 끊지 않는다(urllib) — 취소는 응답이 오거나 timeout_s가 지난 뒤 반영
+        try:
+            content, usage = self.ask()
+            body = {"status": "done", "content": content, "usage": usage}
+        except AiFail as e:
+            body = {"status": "failed", "error": e.code}
+        except Exception as e:
+            log.warning("AI 작업 %s 실패: %s", self.job["id"], type(e).__name__)
+            body = {"status": "failed", "error": "pc_error"}
+        if self.cancel.is_set():
+            body = {"status": "cancelled"}
+        self.finish(body, sleep)
+        return body["status"]
+
+
 # ---------- 연결 루프 ----------
 class Agent:
     def __init__(self, link: dict, sleep=time.sleep, run=None):
         self.link, self.sleep, self.run = link, sleep, run
         self.job: Job | None = None
+        self.ai: AiJob | None = None
         self.fails, self.wait = 0, 5.0
 
     def beat(self) -> dict:
         return {"version": server.VERSION, "job_id": self.job.job["id"] if self.job else None,
-                "concurrency": server.CONCURRENCY, "device": device_info(), "models": server.models_data()}
+                "concurrency": server.CONCURRENCY, "device": device_info(), "models": server.models_data(),
+                "ai": 1, "ai_job_id": self.ai.job["id"] if self.ai else None}
 
     def handle(self, r: dict) -> None:
         if r.get("pull"):
@@ -400,12 +537,23 @@ class Agent:
         if r.get("job") and self.job is None:  # PC 하나는 작업을 한 번에 하나만
             self.job = Job(r["job"], self.link["token"], url=self.link.get("url"), run=self.run)
             threading.Thread(target=self._work, args=(self.job,), daemon=True).start()
+        if r.get("ai_job") and self.ai is None:  # AI는 전사와 따로, 한 번에 하나
+            self.ai = AiJob(r["ai_job"], self.link["token"], url=self.link.get("url"))
+            threading.Thread(target=self._ai_work, args=(self.ai,), daemon=True).start()
+        if r.get("ai_cancel") and self.ai:
+            self.ai.cancel.set()
 
     def _work(self, job: Job) -> None:
         try:
             log.info("작업 %s 끝: %s", job.job["id"], job.go(self.sleep))
         finally:
             self.job = None
+
+    def _ai_work(self, job: AiJob) -> None:
+        try:
+            log.info("AI 작업 %s 끝: %s", job.job["id"], job.go(self.sleep))
+        finally:
+            self.ai = None
 
     def once(self) -> int | None:
         """heartbeat 한 번. 끝내야 하면 종료 코드, 아니면 None. 다음 대기 시간은 self.wait."""
@@ -436,8 +584,9 @@ class Agent:
         while True:
             code = self.once()
             if code is not None:
-                if self.job:
-                    self.job.cancel.set()
+                for j in (self.job, self.ai):
+                    if j:
+                        j.cancel.set()
                 return code
             self.sleep(self.wait)
 

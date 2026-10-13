@@ -47,6 +47,10 @@ docker compose -f compose.yaml -f compose.link.yaml up -d   # GPU면 compose.cud
 - 동작: 5초마다 heartbeat로 모델 목록을 보내고 [모델 적용]·작업을 받습니다. 작업은 트랙·녹음을 내려받아 PC 안에서 구간을 잘라 전사하고 구간별 결과만 올립니다(이름 목록은 받지 않음). 받은 오디오는 작업이 끝나면 지웁니다.
 - 끊김: 네트워크 오류·5xx는 2·4·8…60초 백오프, 401(유달리에서 끊음)은 토큰 파일을 지우고 종료 코드 3, 426(업데이트 필요)은 4.
 - 연결 모드는 포트를 열지 않습니다. Docker HEALTHCHECK는 마지막 heartbeat 성공 시각(2분 안)으로 봅니다.
+- AI 자동완성 거쳐 보내기: 유달리 설정의 개인 AI 주소가 PC 안이면 유달리가 heartbeat로 메시지를 보내고, 이 PC가 그 주소의 `/chat/completions`를 불러 결과만 올립니다(전사와 따로, 한 번에 하나). 주소 예: Ollama `http://localhost:11434/v1`, LM Studio `http://localhost:1234/v1`, vLLM `http://localhost:8000/v1`.
+  - 부를 수 있는 주소는 루프백(`localhost`·`127.0.0.1`·`::1`)과 `host.docker.internal`뿐입니다. 같은 LAN의 다른 기기는 `UDALLY_AI_HOSTS=192.168.0.5,gpu.lan`처럼 직접 적은 호스트만 허용합니다. 리다이렉트는 따르지 않고 프록시를 쓰지 않습니다.
+  - Docker 안에서는 `localhost`·`127.0.0.1`을 `host.docker.internal`로 바꿔 부릅니다(`compose.link.yaml`의 `extra_hosts`). `docker run`이면 `--add-host host.docker.internal:host-gateway`를 붙여 주세요.
+  - 키·메시지·결과는 로그에 남기지 않습니다.
 
 ## 1. 띄우기
 
@@ -93,6 +97,7 @@ STT_API_KEY=... STT_HOST=0.0.0.0 STT_PORT=8000 uv run server.py
 | `STT_CONCURRENCY` | `3` | 동시 처리 수. 유달리는 3요청을 동시에 보냅니다. |
 | `STT_HOST` / `STT_PORT` | `127.0.0.1` / `8000` | uv 실행 때 여는 주소. Docker는 `STT_BIND` / `STT_PORT`(호스트 쪽)를 씁니다. |
 | `UDALLY_URL` | `https://udally.sio2.kr` | 연결 모드가 부를 유달리 주소 |
+| `UDALLY_AI_HOSTS` | (비움) | AI 거쳐 보내기로 부를 수 있는 LAN 호스트(쉼표). 루프백·`host.docker.internal`은 늘 허용 |
 | `STT_LINK_FILE` | 0절 | 연결 토큰 파일 위치 |
 | `STT_NAME` | 컴퓨터 이름 | 연결할 때 보낼 기기 이름(50자, 유달리 확인 화면에서 고칠 수 있음) |
 | `STT_ROCM_VERSION` | `7.13.0` | AMD(Linux) ROCm 런타임 버전. rocm 이미지는 첫 실행 때 `/cache/rocm-<버전>`에 AMD 공식 색인(`repo.amd.com/rocm/whl/<GPU 계열>/`)에서 받습니다. |
