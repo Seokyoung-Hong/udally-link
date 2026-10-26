@@ -218,8 +218,42 @@ class CT2:
     def open(self, path, index, ct, workers):
         from faster_whisper import WhisperModel
         if index is None:
-            return WhisperModel(path, device="cpu", compute_type=ct, num_workers=workers)
-        return WhisperModel(path, device="cuda", device_index=index, compute_type=ct, num_workers=workers)
+            threads = int(env("LINK_CPU_THREADS") or max(1, available_cpus() // max(1, workers)))
+            return WhisperModel(path, device="cpu", compute_type=ct, num_workers=workers,
+                                 cpu_threads=max(1, threads))
+        if self.name != "cuda":
+            return WhisperModel(path, device="cuda", device_index=index, compute_type=ct, num_workers=workers)
+        from whisper_runtime import wrap
+        gpu = next(g for g in self.gpus() if g["index"] == index)
+        default_threads = max(1, min(4, available_cpus() // max(1, len(filtered(self.gpus())))))
+        threads = int(env("LINK_CPU_THREADS") or default_threads)
+        model = WhisperModel(path, device="cuda", device_index=index, compute_type=ct,
+                             num_workers=1, cpu_threads=max(1, threads))
+        return wrap(model, path, gpu, ct, env)
+
+
+def available_cpus(cgroup_root="/sys/fs/cgroup"):
+    """가능하면 호스트 전체 코어 수 대신 이 프로세스에 허용된 코어 수를 쓴다."""
+    try:
+        import psutil
+        count = max(1, len(psutil.Process().cpu_affinity()))
+    except (AttributeError, OSError, NotImplementedError, psutil.Error):
+        count = os.cpu_count() or 1
+    try:
+        quota, period = (Path(cgroup_root) / "cpu.max").read_text().split()
+        if quota != "max":
+            count = min(count, max(1, int(quota) // int(period)))
+    except (OSError, ValueError, ZeroDivisionError):
+        pass
+    try:
+        root = Path(cgroup_root) / "cpu"
+        quota = int((root / "cpu.cfs_quota_us").read_text())
+        period = int((root / "cpu.cfs_period_us").read_text())
+        if quota > 0:
+            count = min(count, max(1, quota // period))
+    except (OSError, ValueError, ZeroDivisionError):
+        pass
+    return count
 
 
 class Torch:
@@ -347,9 +381,19 @@ class OVWhisper:
         return segments(), SimpleNamespace(duration=len(audio) / 16000)
 
 
-def _ram_free_mb() -> int:
+def _ram_free_mb(cgroup_root="/sys/fs/cgroup") -> int:
     import psutil
-    return psutil.virtual_memory().available // 2**20
+    free = psutil.virtual_memory().available
+    root = Path(cgroup_root)
+    for limit_file, used_file in (("memory.max", "memory.current"),
+                                  ("memory/memory.limit_in_bytes", "memory/memory.usage_in_bytes")):
+        try:
+            limit = (root / limit_file).read_text().strip()
+            if limit != "max":
+                free = min(free, max(0, int(limit) - int((root / used_file).read_text())))
+        except (OSError, ValueError):
+            pass
+    return free // 2**20
 
 
 def has(*mods) -> bool:

@@ -34,13 +34,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy
-import psutil
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 import backends
 from backends import NEMOTRON, OOM
+from whisper_runtime import profile
 
 VERSION = "0.1.0"
 env = backends.env
@@ -58,8 +58,11 @@ PRESETS = [m for m in (x.strip() for x in env(
 ).split(",")) if m and (TORCH.supports(m) and HAS_TORCH and BACKEND.name in ("cuda", "cpu") or BACKEND.supports(m))]
 API_KEY = env("LINK_API_KEY") or None
 FORCED_CT = env("LINK_COMPUTE_TYPE") or None
-CPU_FALLBACK = env("LINK_CPU_FALLBACK", "1") == "1"
-CONCURRENCY = int(env("LINK_CONCURRENCY", "3"))
+CPU_FALLBACK = env("LINK_CPU_FALLBACK", "0") == "1"
+PROFILE = profile(env)
+_gpu_count = len(backends.filtered(BACKEND.gpus()))
+_default_concurrency = max(3, _gpu_count) if _gpu_count else max(1, min(3, backends.available_cpus() // 4))
+CONCURRENCY = max(1, int(env("LINK_CONCURRENCY") or _default_concurrency))
 GPU_CTS = backends.CT2.gpu_cts
 log = logging.getLogger("udally-link")
 _handlers = [logging.StreamHandler()]
@@ -85,20 +88,21 @@ def need_mb(weights_mb: float, ct: str, conc: int, cpu: bool = False) -> int:
 
 
 def plan(weights_mb, gpus, ram_free_mb, level=0, device=DEVICE, forced=FORCED_CT,
-         cpu_fallback=CPU_FALLBACK, conc=CONCURRENCY, gpu_cts=GPU_CTS, cpu_ct="int8", prefix="cuda") -> dict:
+         cpu_fallback=CPU_FALLBACK, conc=CONCURRENCY, gpu_cts=GPU_CTS, cpu_ct="int8", prefix="cuda", gpu_workers=None,
+         gpu_expected=False) -> dict:
     """gpus: [{"index", "free_mb"}]. level: OOM으로 강등된 단계(0=float16부터). prefix: device 표시 접두어(cuda·rocm·openvino:GPU.)."""
     if weights_mb is None:
         return {"fits": None, "device": None, "compute_type": None}
     sep = "" if prefix.endswith(".") else ":"
     if device != "cpu" and gpus:
         for ct in [forced] if forced else gpu_cts[level:]:
-            per_gpu = math.ceil(conc / len(gpus))
+            per_gpu = gpu_workers or math.ceil(conc / len(gpus))
             ok = [g["index"] for g in gpus if g["free_mb"] >= need_mb(weights_mb, ct, per_gpu)]
             if ok:
-                per_gpu = math.ceil(conc / len(ok))
+                per_gpu = gpu_workers or math.ceil(conc / len(ok))
                 return {"fits": True, "device": prefix + sep + ",".join(map(str, ok)), "compute_type": ct,
                         "gpus": ok, "workers": per_gpu, "need_mb": need_mb(weights_mb, ct, per_gpu)}
-    if device != "cpu" and gpus and not cpu_fallback:  # GPU가 있는데 모자라면 CPU로 내리지 않는다
+    if device != "cpu" and not cpu_fallback and (gpus or gpu_expected or device != "auto"):
         return {"fits": False, "device": prefix.rstrip(":."), "compute_type": None}
     ct = forced if forced in ("int8", "float32") else cpu_ct
     need = need_mb(weights_mb, ct, conc, cpu=True)
@@ -118,7 +122,7 @@ def gpus(rt=None) -> list[dict]:
 
 
 def ram_free_mb() -> int:
-    return psutil.virtual_memory().available // 2**20
+    return backends._ram_free_mb()
 
 
 # ---------- 상태 ----------
@@ -132,6 +136,14 @@ levels: dict[str, int] = {}  # OOM 강등 단계
 rtf: dict[str, float] = {}  # 처리시간/오디오길이 이동평균
 current: dict = {}  # ponytail: 한 번에 한 모델만 올린다 {"id", "plan", "workers": [[모델, 진행 수, 스레드 묶음]]}. 번갈아 쓰면 바꿀 때마다 다시 올린다.
 load_lock = threading.Lock()
+
+
+def capacity():
+    """전처리 대기열 크기와 실제 모델 실행 슬롯 수를 구별한다(ETA/heartbeat)."""
+    p = current.get("plan") or {}
+    if p.get("gpus"):
+        return len(p["gpus"]) * p["workers"]
+    return p.get("workers") or CONCURRENCY
 
 
 def auth(authorization: str | None = Header(None)) -> None:
@@ -177,12 +189,19 @@ def local_path(model_id: str, ct=None) -> str | None:
 def plan_for(model_id: str, gpus_, ram, level=0) -> dict:
     rt = runtime(model_id)
     gpu_cts, cpu_ct = rt.gpu_cts, rt.cpu_ct
+    if PROFILE == "accuracy" and isinstance(rt, backends.CT2) and rt.name == "cuda" and not FORCED_CT:
+        gpu_cts = ["float16"]  # 메모리가 부족하다고 정확성 우선 모드에서 몰래 양자화하지 않는다.
+    if PROFILE == "accuracy" and isinstance(rt, backends.CT2):
+        cpu_ct = "float32" if need_mb(weights.get(model_id) or 0, "float32", CONCURRENCY, cpu=True) <= ram else "int8"
     if cts_of(model_id) != [None]:  # 정밀도마다 저장소가 다르면 받아 둔 정밀도 안에서만 고른다(받기 전이면 전부)
         have = [c for c in gpu_cts if local(model_id, c)]
         if have:
             gpu_cts, cpu_ct = have, have[-1]
     forced = FORCED_CT if rt is BACKEND and isinstance(rt, backends.CT2) else None
-    return plan(weights.get(model_id), gpus_, ram, level, forced=forced, gpu_cts=gpu_cts, cpu_ct=cpu_ct, prefix=rt.prefix)
+    return plan(weights.get(model_id), gpus_, ram, level, forced=forced, gpu_cts=gpu_cts,
+                cpu_ct=cpu_ct, prefix=rt.prefix,
+                gpu_expected=rt.name != "cpu" and _gpu_count > 0 and DEVICE != "cpu",
+                gpu_workers=1 if isinstance(rt, backends.CT2) and rt.name == "cuda" else None)
 
 
 def fill_sizes() -> None:
@@ -235,6 +254,8 @@ def cpu_state(model_id: str, p: dict, available_gpus: list) -> dict:
         return {"cpu_reason": None, "gpu_error_detail": None}
     if DEVICE == "cpu":
         reason = "selected"
+    elif runtime(model_id).name == "cpu":
+        reason = "cpu_only"
     elif gpu_broken:
         reason = "gpu_library"
     elif levels.get(model_id, 0) or available_gpus:
@@ -260,12 +281,20 @@ def status_of(model_id: str, hw=None) -> dict:
     loaded = current.get("id") == model_id
     p = current["plan"] if loaded else planned
     item.update(fits=p["fits"], device=p["device"], compute_type=p["compute_type"],
+                concurrency=len(p.get("gpus", [])) * p.get("workers", 1) if p.get("gpus") else p.get("workers", CONCURRENCY),
                 loaded=loaded, loaded_device=p["device"] if loaded else None,
                 loaded_compute_type=p["compute_type"] if loaded else None,
                 planned_device=planned["device"], planned_compute_type=planned["compute_type"],
+                profile=PROFILE,
                 **cpu_state(model_id, p, g))
     if model_id in runtime_errors:
         item.update(runtime_errors[model_id])
+    item["precision_fallback"] = "cpu_memory" if (PROFILE == "accuracy" and isinstance(rt, backends.CT2) and p.get("device") == "cpu"
+                                                  and p.get("compute_type") == "int8" and not FORCED_CT) else None
+    if loaded:
+        item["batch_sizes"] = {str(i): getattr(w[0], "batch_size", 0)
+                               for i, w in zip(p.get("gpus", []), current.get("workers", []))}
+        item["rechecked_segments"] = sum(getattr(w[0], "quality_retries", 0) for w in current.get("workers", []))
     if item["status"] == "ready":
         item["rtf"] = round(rtf[model_id], 3) if model_id in rtf else None
     return item
@@ -332,7 +361,8 @@ def load(model_id: str) -> dict:
                 # CTranslate2가 "CUDA failed with error invalid argument"로 실패한다(이 PC 실측).
                 models = [rt.open(path, i, p["compute_type"], p["workers"]) for i in p["gpus"]] or \
                          [rt.open(path, None, p["compute_type"], p["workers"])]
-                workers = [[m, 0, ThreadPoolExecutor(p["workers"])] for m in models]
+                workers = [[m, 0, ThreadPoolExecutor(p["workers"]), {"seconds": 0.0, "rtf": None}]
+                           for m in models]
                 # 1초 무음으로 한 번 돌려 본다: CUDA 라이브러리 누락(cublas64_12.dll 등)과 첫 실행 지연을 여기서 치른다.
                 for w in workers:
                     w[2].submit(lambda m=w[0]: list(m.transcribe(
@@ -403,7 +433,8 @@ def decode(w, model_id: str, data, language, prompt, cancel: threading.Event) ->
         parts.append(s.text)
     if info.duration > 0:
         r = (time.monotonic() - start) / info.duration
-        rtf[model_id] = r if model_id not in rtf else 0.7 * rtf[model_id] + 0.3 * r
+        with lock:
+            rtf[model_id] = r if model_id not in rtf else 0.7 * rtf[model_id] + 0.3 * r
     return "".join(parts).strip()
 
 
@@ -428,6 +459,44 @@ def run(model_id: str, data, language, prompt, cancel: threading.Event) -> str:
     finally:
         with lock:
             w[1] -= 1
+
+
+def run_many(model_id: str, audios, language, prompt, cancel: threading.Event) -> list[str]:
+    """짧은 발화를 묶어 GPU별 한 전용 스레드에서 배치한다. 빠른 GPU가 먼저 다음 작업을 받는다."""
+    cur = load(model_id)
+    duration = sum(len(a) for a in audios) / 16000
+    with lock:
+        w = min(cur["workers"], key=lambda x: x[3]["seconds"] * (x[3]["rtf"] or 1.0))
+        w[1] += 1
+        w[3]["seconds"] += duration
+
+    def execute():
+        if cancel.is_set():
+            return [""] * len(audios)
+        started = time.monotonic()
+        if hasattr(w[0], "transcribe_many"):
+            result = w[0].transcribe_many(audios, language=language or None,
+                                          initial_prompt=prompt or None, cancel=cancel)
+        else:
+            result = [decode(w, model_id, a, language, prompt, cancel) for a in audios]
+        if duration > 0 and not cancel.is_set():
+            measured = (time.monotonic() - started) / duration
+            with lock:
+                old = w[3]["rtf"]
+                w[3]["rtf"] = measured if old is None else 0.7 * old + 0.3 * measured
+                rtf[model_id] = measured if model_id not in rtf else 0.7 * rtf[model_id] + 0.3 * measured
+        return result
+
+    try:
+        return w[2].submit(execute).result()
+    except Exception as exc:
+        if is_oom(exc):
+            runtime_errors[model_id] = {"runtime_error": "gpu_memory", "runtime_error_detail": None}
+        raise
+    finally:
+        with lock:
+            w[1] -= 1
+            w[3]["seconds"] -= duration
 
 
 def start() -> None:

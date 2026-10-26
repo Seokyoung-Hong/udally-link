@@ -19,7 +19,7 @@
 
 - 실행 전에 내용을 보고 싶으면 위 주소를 브라우저로 여세요(유달리가 이 저장소의 고정 커밋 `scripts/` 원본으로 보냅니다).
 - 시작하면 **자동 설치 (권장) / 세부 설정**을 방향키·Enter로 선택합니다. 기본 선택은 자동 설치이며 추가 질문 없이 진행합니다. Esc로 취소합니다.
-- 세부 설정 화면에서 설치 방식, 처리 장치, NVIDIA GPU 번호, GPU 오류 시 CPU 전환 여부, 자동 시작, PC 이름을 바꾼 뒤 **설치 시작**을 누릅니다. 선택한 실행 설정은 다음 실행에도 유지됩니다.
+- 세부 설정 화면에서 설치 방식, 처리 장치, NVIDIA GPU 번호, GPU 오류 시 CPU 전환 여부, 자동 시작, PC 이름, 전사 우선순위를 바꾼 뒤 **설치 시작**을 누릅니다. 기본값은 **정확성 우선**입니다. 선택한 실행 설정은 다음 실행에도 유지됩니다.
 - 화면 제어를 지원하지 않는 터미널은 번호 입력으로 전환됩니다. `UDALLY_TUI=0`으로 번호 입력을 직접 선택할 수도 있습니다.
 - 무인 설치는 `UDALLY_INSTALL_MODE=auto`로 지정합니다. 터미널이 없는 환경과 dry-run은 자동 설치로 진행합니다. 관리자 권한(sudo·UAC)을 요구하지 않고 토큰을 출력하지 않습니다.
 - 화면에 나온 주소(`https://udally.quanect.kr/link`)를 직접 열고 **PC 화면의 코드를 손으로 입력**한 뒤 [허용]합니다. 코드가 든 링크를 남에게 받았다면 누르지 마세요.
@@ -74,6 +74,8 @@ docker compose up -d --build             # 확인 뒤 옛 볼륨 삭제: docker 
 
 ## 1. 띄우기
 
+정확성 우선 기본 정책·CPU/단일·다중 GPU 자원 배분과 추가 실측은 [구성 검증 보고서](docs/GPU_CPU_정확성_우선_구성_2026-10-27.md)에 정리했습니다. 배치 성능 모드는 선택 사항이며 정확도가 같다고 보장하지 않습니다.
+
 ### Docker(권장)
 
 ```bash
@@ -102,7 +104,7 @@ LINK_API_KEY=... LINK_HOST=0.0.0.0 LINK_PORT=8000 uv run server.py
 - 의존성은 `server.py` 머리(PEP 723)와 `pyproject.toml`(같은 목록, `test_plan.py`가 검사)에 있어 uv가 알아서 설치합니다. 모델 캐시는 `HF_HOME`(기본 `~/.cache/huggingface`)입니다.
 - uv(네이티브) 경로에서는 사용자 PC가 PyPI의 PyAV 휠을 직접 받습니다. 이 휠의 FFmpeg는 libx264·libx265(GPL, 인코더 전용 — 전사에는 쓰지 않음)를 링크합니다. 이 저장소는 그 바이너리를 배포하지 않으며, 사용자 PC에서 사용자가 직접 설치·조합하는 것입니다. 우리가 배포하는 바이너리(이미지)에는 GPL 바이너리를 넣지 않습니다.
 - uv 실행에서 GPU를 쓰려면 CUDA 12용 cuBLAS와 cuDNN 9가 시스템에 있어야 합니다([faster-whisper 요구사항](https://github.com/SYSTRAN/faster-whisper#gpu)).
-  없으면 첫 적재에서 실패를 감지하고 CPU로 바꿉니다(이 PC에서 `cublas64_12.dll` 없음 → CPU int8 전환 확인).
+  없으면 첫 적재에서 오류를 표시하고 중단합니다. `LINK_CPU_FALLBACK=1`로 명시한 경우에만 CPU로 전환합니다.
 
 ### 환경변수
 
@@ -112,9 +114,13 @@ LINK_API_KEY=... LINK_HOST=0.0.0.0 LINK_PORT=8000 uv run server.py
 | `LINK_MODELS` | 아래 프리셋 5개(Nemotron은 해당 이미지에서만) | `/v1/models`에 보일 모델 ID(쉼표 구분). 여기에 없는 ID는 404입니다. |
 | `LINK_DEVICE` | `auto` | `auto`(NVIDIA > AMD > Intel > CPU) · `cuda` · `rocm` · `openvino` · `cpu` |
 | `LINK_GPUS` | 전부 | 쓸 GPU 번호(nvidia-smi·HIP·OpenVINO `GPU.n` 번호). 예 `0,1`. `CUDA_VISIBLE_DEVICES`와 함께 쓰지 마세요(번호가 어긋납니다). |
-| `LINK_CPU_FALLBACK` | `1` | GPU 메모리가 모자라거나 GPU를 쓸 수 없을 때 CPU로 내립니다. `0`이면 거절합니다. |
+| `LINK_CPU_FALLBACK` | `0` | GPU 오류 시 기본적으로 중단합니다. `1`로 명시한 경우에만 CPU 전환을 허용합니다. GPU가 처음부터 없는 자동 감지 환경은 CPU를 사용합니다. |
 | `LINK_COMPUTE_TYPE` | 자동 | 정하면 정밀도를 고정합니다(자동 강등 안 함). |
-| `LINK_CONCURRENCY` | `3` | 동시 처리 수. 유달리는 3요청을 동시에 보냅니다. |
+| `LINK_PROFILE` | `accuracy` | 정확성 우선: 기존 순차 추론·beam 5, 강제 n-gram 억제 없음. CUDA float16을 자동 양자화하지 않습니다. CPU는 RAM이 충분하면 float32, 부족하면 int8과 안내를 사용합니다. 선택한 모델은 바꾸지 않습니다. |
+| `LINK_CONCURRENCY` | 장비별 자동 | GPU 환경은 `max(3, GPU 수)`의 전처리 대기열, CPU 전용은 허용 코어 수로 1~3 요청을 고릅니다. CUDA 모델은 GPU당 1워커이며 웹에는 실제 실행 슬롯 수를 보고합니다. |
+| `LINK_BATCH_SIZE` | `auto` | 정확성 우선 모드에서는 항상 0(순차). `balanced`/`throughput`에서 모델 크기·남은 VRAM·안전 여유로 1/2/4/8 상한을 선택합니다. `0`은 순차, `1`~`32`는 지정 상한이며 메모리 상황에 따라 줄어듭니다. |
+| `LINK_QUALITY_GUARD` | 균형 모드 `1` | 배치 결과가 음성 길이에 비해 지나치게 짧거나 용어 나열이면 같은 GPU에서 순차 재확인합니다. 모든 누락·환각을 찾는 정확도 검증기는 아닙니다. |
+| `LINK_CPU_THREADS` | 장비별 자동 | CPU 전용은 워커 수로 코어를 나누고, CUDA 모델 전처리는 GPU 수를 고려해 최대 4스레드를 씁니다. 프로세스 affinity·cgroup v1/v2 CPU 제한을 반영합니다. |
 | `LINK_HOST` / `LINK_PORT` | `127.0.0.1` / `8000` | uv 실행 때 여는 주소. Docker는 `LINK_BIND` / `LINK_PORT`(호스트 쪽)를 씁니다. |
 | `UDALLY_URL` | `https://udally.quanect.kr` | 연결 모드가 부를 유달리 주소 |
 | `UDALLY_AI_HOSTS` | (비움) | AI 거쳐 보내기로 부를 수 있는 LAN 호스트(쉼표). 루프백·`host.docker.internal`은 늘 허용 |
@@ -169,15 +175,15 @@ LINK_API_KEY=... LINK_HOST=0.0.0.0 LINK_PORT=8000 uv run server.py
 
 | 실행부(`backends.py`) | device 값 | 정밀도 강등 | 비고 |
 |---|---|---|---|
-| CT2 · NVIDIA | `cuda:0,1` | float16 → int8_float16 → int8 → CPU int8 | 이 PC 실측 |
+| CT2 · NVIDIA | `cuda:0,1` | 정확성 우선은 float16 유지. 다른 모드는 float16 → int8_float16 → int8. CPU 전환은 명시적으로 허용한 경우만 | CUDA 모델당 1워커 |
 | CT2 · AMD ROCm | `rocm:0` | 같음 | **실험**. CTranslate2 해제·종료 멈춤 버그(#2038·#2085) 때문에 모델을 바꿀 때 내리지 않고 프로세스를 다시 띄웁니다. 대상 GPU: gfx1030·1100~1102·1150·1151·1200·1201. 실기 시험 없음 |
 | OpenVINO · Intel | `openvino:GPU.0` | float16 → int8 → int4 → OpenVINO CPU | 정밀도마다 공식 변환본 저장소가 따로라(`OpenVINO/whisper-*-{fp16,int8,int4}-ov`) [적용] 때 장비에 맞는 정밀도를 받고, 받은 정밀도 안에서 낮춥니다. 모델 id·표시 이름은 그대로, 실제 저장소는 `source`. 30초 이하 구간은 faster-whisper VAD로 만듭니다. 외장 GPU 여유는 전체의 90%, 내장 GPU는 RAM 여유로 봅니다(OpenVINO가 남은 VRAM을 주지 않음). GPU 실기 시험 없음(CPU 장치로 경로 시험) |
-| CT2 · CPU | `cpu` | int8 | |
+| CT2 · CPU | `cpu` | 정확성 우선은 RAM 여유에 따라 float32 또는 int8(웹 안내). 다른 모드는 int8 | 코어 수로 동시 요청·스레드 제한 |
 | Torch · Nemotron | `cuda:0` | float16 → CPU float32 | NVIDIA 전용 |
 
 | 경우 | 동작 | 이 PC 실측 |
 |---|---|---|
-| ① GPU 여러 개 | 필요 메모리가 들어가는 GPU마다 모델을 하나씩 올리고, 진행 중 요청이 가장 적은 GPU로 보냅니다(GPU당 동시 수 = ⌈3/GPU 수⌉). | RTX 5060 Ti + RTX 3060: `cuda:0,1` float16, 3동시 4묶음 모두 200 |
+| ① GPU 여러 개 | CUDA GPU마다 모델·전용 워커 1개를 둡니다. 정확성 우선은 원본 구간을 독립 처리하고, 배치 모드는 대기 오디오 길이와 실측 RTF로 작업을 분배합니다. | 과거 다중 GPU 응답 확인, 신규 정책은 개별 장치 검증과 단위 테스트 |
 | ② GPU 1개·넉넉 | float16 | `LINK_GPUS=1`: `cuda:1` float16 |
 | ③ GPU 1개·부족 | float16 → int8_float16 → int8 순으로 낮추고, 그래도 안 되면 CPU 폴백(`LINK_CPU_FALLBACK=0`이면 `fits:false`로 [적용] 거절) | 3060 여유 2.3GB로 만든 뒤: turbo `int8_float16`, large-v3 `cpu int8`(폴백 끄면 `fits:false`, POST 409) |
 | ④ GPU 없음 | CPU int8, 여유 RAM보다 크면 `fits:false` | CPU 컨테이너: 모든 프리셋 `cpu int8`, 3동시 200 |
@@ -301,7 +307,7 @@ curl -H "Authorization: Bearer $KEY" -F file=@samples/tone.webm -F model=Systran
 
 ## 9. 알려진 한계
 
-- 여유 RAM은 컨테이너 메모리 제한이 아니라 호스트(또는 WSL VM) 기준입니다. `mem_limit`을 걸었다면 `fits`가 실제보다 낙관적일 수 있습니다.
+- 여유 RAM은 호스트(또는 WSL VM) 여유와 읽을 수 있는 Linux cgroup v1/v2 한도를 함께 반영합니다. 제한 파일에 접근할 수 없는 환경에서는 호스트 기준 추정치입니다.
 - 크기 정보는 기동 직후 Hugging Face API로 한 번 읽습니다. 오프라인이면 받지 않은 모델의 `fits`가 `null`로 남습니다.
 - 첫 GPU 적재는 CUDA 첫 실행 컴파일 때문에 오래 걸릴 수 있습니다(이 PC RTX 5060 Ti: 최대 약 30초, 캐시가 생긴 뒤 5~16초). 그래서 [적용]·받기 완료 때 미리 올립니다. 시험 중 첫 기동 1회에서 전사 요청이 응답 없이 끊긴 일이 있었으나 재현되지 않았습니다(원인 확인 불가).
 - Windows에서 uv로 띄우고 출력을 파일로 돌리면 로그가 CP949로 저장됩니다.

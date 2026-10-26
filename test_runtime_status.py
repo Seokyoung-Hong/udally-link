@@ -20,6 +20,9 @@ class RuntimeStatusTests(unittest.TestCase):
 
     def test_cpu_cause_and_private_path_redaction(self):
         cpu = {"device": "cpu"}
+        rt = Mock()
+        rt.name = "cuda"
+        self.scope.enter_context(patch.object(s, "runtime", return_value=rt))
         self.assertEqual(s.cpu_state("test", cpu, [])['cpu_reason'], "gpu_unavailable")
         self.assertEqual(s.cpu_state("test", cpu, [{}])['cpu_reason'], "gpu_memory")
         with patch.object(s, "DEVICE", "cpu"):

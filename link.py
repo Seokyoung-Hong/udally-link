@@ -251,6 +251,20 @@ def speech(chunks, vad=None):
 
 
 # ---------- 작업 ----------
+def groups(items, max_seconds=240, max_rows=32):
+    """준비된 구간을 제한된 크기로 묶는다. 화자·구간 메타데이터는 그대로 둔다."""
+    group, seconds = [], 0.0
+    for item in items:
+        duration = len(item[3]) / SR
+        if group and (len(group) >= max_rows or seconds + duration > max_seconds):
+            yield group
+            group, seconds = [], 0.0
+        group.append(item)
+        seconds += duration
+    if group:
+        yield group
+
+
 class Job:
     def __init__(self, job: dict, token: str, url=None, run=None):
         self.job, self.token, self.url = job, token, url
@@ -327,6 +341,30 @@ class Job:
             self.p["segments_failed" if row.get("failed") else "segments_done"] += 1
             self.p["done_ms"] += g["duration_ms"]
 
+    def many(self, items) -> None:
+        if self.cancel.is_set():
+            return
+        try:
+            texts = server.run_many(self.job["model"], [item[3] for item in items],
+                                    self.job.get("language") or "ko", self.job.get("glossary") or None,
+                                    self.cancel)
+            if len(texts) != len(items):
+                raise RuntimeError("배치 출력 구간 수가 입력과 다릅니다.")
+        except Exception as exc:
+            log.warning("묶음 전사 실패, 원본 구간별로 재시도합니다: %s", getattr(exc, "detail", exc))
+            for item in items:
+                if self.cancel.is_set():
+                    return
+                self.one(*item)
+            return
+        if self.cancel.is_set():
+            return
+        with self.lock:
+            for (seq, uid, g, _), text in zip(items, texts):
+                self.rows.append({"seq": seq, "user_id": uid, **g, "text": text})
+                self.p["segments_done"] += 1
+                self.p["done_ms"] += g["duration_ms"]
+
     def finish(self, body: dict, sleep=time.sleep) -> None:
         """마지막 보고는 백오프로 최대 10분 다시 보낸다. 그사이 넘겨졌으면(404/409) 버린다."""
         until, n = time.monotonic() + RESULT_RETRY_S, 0
@@ -360,12 +398,18 @@ class Job:
         error = None
         try:
             limit = threading.BoundedSemaphore(server.CONCURRENCY * 2)  # 디코드가 전사보다 너무 앞서가지 않게(메모리)
+            runtime = server.runtime(j["model"])
+            batched = (self.run is server.run and isinstance(runtime, server.backends.CT2)
+                       and runtime.name == "cuda" and server.PROFILE != "accuracy"
+                       and server.env("LINK_BATCH_SIZE", "auto") != "0")
             with ThreadPoolExecutor(server.CONCURRENCY) as pool:
-                for item in self.segments(tmp):
+                items = groups(self.segments(tmp)) if batched else self.segments(tmp)
+                for item in items:
                     if self.cancel.is_set():
                         break
                     limit.acquire()
-                    pool.submit(self.one, *item).add_done_callback(lambda _f: limit.release())
+                    future = pool.submit(self.many, item) if batched else pool.submit(self.one, *item)
+                    future.add_done_callback(lambda _f: limit.release())
         except LookupError as e:
             error = str(e)
         except Exception as e:
@@ -866,7 +910,7 @@ class Agent:
 
     def beat(self) -> dict:
         return {"version": server.VERSION, "job_id": self.job.job["id"] if self.job else None,
-                "concurrency": server.CONCURRENCY, "device": {**device_info(), "codex": codex_device()},
+                "concurrency": server.capacity(), "device": {**device_info(), "codex": codex_device()},
                 "models": server.models_data(),
                 "ai": 1, "codex": 1 if codex_ready() else 0, "codex_policy": CODEX_POLICY,  # 유달리가 검증한 버전의 Codex CLI가 있을 때만 Codex 작업을 받는다
                 "ai_job_id": self.ai.job["id"] if self.ai else None}

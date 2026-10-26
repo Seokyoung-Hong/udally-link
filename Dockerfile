@@ -72,7 +72,7 @@ RUN if [ "$VARIANT" = openvino ]; then apt-get update && apt-get install -y --no
  && echo /opt/ffmpeg/lib > /etc/ld.so.conf.d/ffmpeg.conf && ldconfig \
  && useradd -m app && mkdir /cache && chown app /cache
 WORKDIR /app
-COPY server.py link.py backends.py LICENSE THIRD_PARTY_NOTICES ./
+COPY server.py link.py backends.py whisper_runtime.py LICENSE THIRD_PARTY_NOTICES ./
 COPY licenses ./licenses
 # 이 이미지에 실제로 든 패키지·네이티브 라이브러리 목록(GPL 패키지가 있으면 빌드 실패)
 COPY scripts/third_party.py /tmp/third_party.py

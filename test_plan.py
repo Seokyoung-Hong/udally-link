@@ -16,9 +16,9 @@ TURBO, LARGE = 1545, 2950  # model.bin MB(fp16)
 g = lambda i, free: {"index": i, "free_mb": free}  # noqa: E731
 
 # ① GPU 여러 개: 둘 다 들어가면 둘 다 쓴다, 하나만 들어가면 그것만
-p = plan(LARGE, [g(0, 13000), g(1, 11000)], 30000, device="auto", forced=None)
+p = plan(LARGE, [g(0, 13000), g(1, 11000)], 30000, device="auto", forced=None, conc=3)
 assert (p["device"], p["compute_type"], p["workers"]) == ("cuda:0,1", "float16", 2), p
-p = plan(LARGE, [g(0, 13000), g(1, 3000)], 30000, device="auto", forced=None)
+p = plan(LARGE, [g(0, 13000), g(1, 3000)], 30000, device="auto", forced=None, conc=3)
 assert (p["device"], p["compute_type"], p["workers"]) == ("cuda:0", "float16", 3), p
 # ② GPU 1개·넉넉
 assert plan(TURBO, [g(0, 8000)], 8000, device="auto", forced=None)["compute_type"] == "float16"

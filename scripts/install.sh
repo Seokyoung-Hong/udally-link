@@ -87,6 +87,7 @@ LINK_DEVICE=${LINK_DEVICE:-auto}
 LINK_GPUS=${LINK_GPUS:-}
 LINK_CPU_FALLBACK=${LINK_CPU_FALLBACK:-0}
 LINK_NAME=${LINK_NAME:-}
+LINK_PROFILE=${LINK_PROFILE:-accuracy}
 select_options() {
   mode=${UDALLY_INSTALL_MODE:-}
   case "$mode" in ''|auto|advanced) ;; *) fail 'UDALLY_INSTALL_MODE: auto 또는 advanced' ;; esac
@@ -98,7 +99,7 @@ select_options() {
       case "$selected_mode" in 1) mode=auto ;; 2) mode=advanced ;; esac
     fi
   fi
-  if [ "$mode" = auto ]; then say '자동 설치: 장치 자동 감지 · GPU 오류 시 중단 · 자동 시작'; return; fi
+  if [ "$mode" = auto ]; then say '자동 설치: 정확성 우선 · 장치 자동 감지 · GPU 오류 시 중단 · 자동 시작'; return; fi
   exec 3</dev/tty
   focus=1
   while :; do
@@ -106,9 +107,10 @@ select_options() {
     case "$LINK_DEVICE" in cpu) device_name=CPU ;; auto) device_name='자동 감지 (GPU 우선)' ;; *) device_name=GPU ;; esac
     fallback_name='중단'; [ "$LINK_CPU_FALLBACK" = 0 ] || fallback_name='CPU로 전환'
     start_name='켜기'; [ "$AUTOSTART" = 1 ] || start_name='끄기'
+    case "$LINK_PROFILE" in balanced) profile_name='균형' ;; throughput) profile_name='처리량 우선' ;; *) profile_name='정확성 우선 (권장)' ;; esac
     focus=$(MENU_DEFAULT=$focus choose '세부 설정 · 항목을 선택해 변경하세요.' \
       "설치 방식 : $method_name" "처리 장치 : $device_name" "사용할 GPU : ${LINK_GPUS:-전체}" \
-      "GPU 오류 시 : $fallback_name" "자동 시작 : $start_name" "PC 이름 : ${LINK_NAME:-컴퓨터 이름}" '설치 시작' '취소') || exit $?
+      "GPU 오류 시 : $fallback_name" "자동 시작 : $start_name" "PC 이름 : ${LINK_NAME:-컴퓨터 이름}" "전사 우선순위 : $profile_name" '설치 시작' '취소') || exit $?
     case "$focus" in
       1)
         answer=$(choose '설치 방식' '자동 감지' 'uv' 'Docker') || exit $?
@@ -146,18 +148,21 @@ select_options() {
       6)
         printf 'PC 이름 (Enter: 컴퓨터 이름): ' >&2
         IFS= read -r LINK_NAME <&3 || fail '입력이 종료되었습니다.' ;;
-      7) break ;;
-      8) fail '설치를 취소했습니다.' ;;
+      7)
+        answer=$(choose '전사 우선순위' '정확성 우선 (권장)' '균형 (의심 구간 재확인)' '처리량 우선') || exit $?
+        case "$answer" in 1) LINK_PROFILE=accuracy ;; 2) LINK_PROFILE=balanced ;; 3) LINK_PROFILE=throughput ;; esac ;;
+      8) break ;;
+      9) fail '설치를 취소했습니다.' ;;
     esac
   done
 
   exec 3<&-
 }
 save_options() {
-  export LINK_DEVICE LINK_GPUS LINK_CPU_FALLBACK LINK_NAME
-  if [ "$DRY" = 1 ]; then say "[dry-run] 설치 설정 저장: $LINK_DEVICE / GPU=$LINK_GPUS / CPU전환=$LINK_CPU_FALLBACK / PC=$LINK_NAME"; return; fi
+  export LINK_DEVICE LINK_GPUS LINK_CPU_FALLBACK LINK_NAME LINK_PROFILE
+  if [ "$DRY" = 1 ]; then say "[dry-run] 설치 설정 저장: $LINK_DEVICE / GPU=$LINK_GPUS / CPU전환=$LINK_CPU_FALLBACK / PC=$LINK_NAME / 전사=$LINK_PROFILE"; return; fi
   tool_dir=$(uv tool dir)
-  "$tool_dir/udally-link/bin/python" -c 'import os,json,pathlib; p=pathlib.Path.home()/".config/udally-link/options.json"; p.parent.mkdir(parents=True,exist_ok=True); p.write_text(json.dumps({k:os.environ[k] for k in ("LINK_DEVICE","LINK_GPUS","LINK_CPU_FALLBACK","LINK_NAME")},ensure_ascii=False),encoding="utf-8")'
+  "$tool_dir/udally-link/bin/python" -c 'import os,json,pathlib; p=pathlib.Path.home()/".config/udally-link/options.json"; p.parent.mkdir(parents=True,exist_ok=True); p.write_text(json.dumps({k:os.environ[k] for k in ("LINK_DEVICE","LINK_GPUS","LINK_CPU_FALLBACK","LINK_NAME","LINK_PROFILE")},ensure_ascii=False),encoding="utf-8")'
 }
 
 # ---------- GPU 판별: NVIDIA > AMD > Intel > CPU ----------
@@ -220,7 +225,7 @@ docker_install() {
   run docker rm -f "$NAME" >/dev/null 2>&1 || true
   # shellcheck disable=SC2086 # args는 단어로 나뉘어야 한다
   restart=unless-stopped; [ "$AUTOSTART" = 1 ] || restart=no
-  run docker run -d --name "$NAME" --restart "$restart" -v "$VOLUME:/cache" -e UDALLY_URL="$UDALLY_URL" -e LINK_DEVICE="$LINK_DEVICE" -e LINK_GPUS="$LINK_GPUS" -e LINK_CPU_FALLBACK="$LINK_CPU_FALLBACK" -e LINK_NAME="$LINK_NAME" $args "$ref" connect >/dev/null
+  run docker run -d --name "$NAME" --restart "$restart" -v "$VOLUME:/cache" -e UDALLY_URL="$UDALLY_URL" -e LINK_DEVICE="$LINK_DEVICE" -e LINK_GPUS="$LINK_GPUS" -e LINK_CPU_FALLBACK="$LINK_CPU_FALLBACK" -e LINK_NAME="$LINK_NAME" -e LINK_PROFILE="$LINK_PROFILE" $args "$ref" connect >/dev/null
   [ "$DRY" = 1 ] && return
   # 이미 연결됐으면(볼륨에 토큰) 바로 끝. 아니면 기기 인증 주소·코드가 보일 때까지 로그를 보여 준다.
   seen=0 i=0
