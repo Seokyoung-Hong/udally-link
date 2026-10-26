@@ -6,5 +6,5 @@ services:
     ports: !reset []
     extra_hosts: ["host.docker.internal:host-gateway"]  # AI 자동완성: PC의 Ollama 등(link.py ai_endpoint)
     environment:
-      UDALLY_URL: ${UDALLY_URL:-https://udally.sio2.kr}
+      UDALLY_URL: ${UDALLY_URL:-https://udally.quanect.kr}
       UDALLY_AI_HOSTS: ${UDALLY_AI_HOSTS:-}

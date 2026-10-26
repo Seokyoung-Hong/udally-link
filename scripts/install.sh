@@ -1,6 +1,6 @@
 #!/bin/sh
-# udally-link 한 줄 설치(macOS·Linux): curl -fsSL https://udally.sio2.kr/link/install.sh | sh
-# 다시 실행하면 업데이트(이미 연결돼 있으면 다시 연결하지 않음). 제거: curl -fsSL https://udally.sio2.kr/link/uninstall.sh | sh
+# udally-link 한 줄 설치(macOS·Linux): curl -fsSL https://udally.quanect.kr/link/install.sh | sh
+# 다시 실행하면 업데이트(이미 연결돼 있으면 다시 연결하지 않음). 제거: curl -fsSL https://udally.quanect.kr/link/uninstall.sh | sh
 # 사람 입력을 받지 않는다(| sh는 표준 입력이 스크립트다). sudo를 쓰지 않는다. 토큰을 출력하지 않는다.
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 set -eu
@@ -19,7 +19,7 @@ CT2_ROCM_ZIP="https://github.com/OpenNMT/CTranslate2/releases/download/v4.8.2/ro
 CT2_ROCM_SHA256="b469e765f74ef85fb97bf4fe2347c8c6296dda00d7f5cf20658f23e95004a925"
 ROCM_VERSION="7.13.0"
 # ---------- 시험용 덮어쓰기(평소에는 비움) ----------
-UDALLY_URL="${UDALLY_URL:-https://udally.sio2.kr}"
+UDALLY_URL="${UDALLY_URL:-https://udally.quanect.kr}"
 NAME="${UDALLY_NAME:-udally-link}"          # 컨테이너 이름
 VOLUME="${UDALLY_VOLUME:-udally-link}"      # 모델·토큰 볼륨
 LEGACY="udally-stt"                         # 옛 이름(컨테이너·볼륨·uv 도구·자동 시작). 있으면 정리하고 새 이름으로
@@ -215,6 +215,11 @@ EOF
   say "로그인할 때 자동으로 켜집니다(systemd --user). 상태: systemctl --user status udally-link"
 }
 
+# 이미지 릴리스 전에는 실행 가능한 uv 설치를 사용한다.
+if [ -z "$DIGEST_CPU" ] && [ -z "${UDALLY_IMAGE:-}" ] && [ "$FORCE" != docker ]; then
+  FORCE=uv
+  say "공개 Docker 이미지 릴리스가 없어 uv로 설치합니다."
+fi
 kind=$(gpu_kind)
 if [ "$FORCE" != uv ] && command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 || [ "$FORCE" = docker ]; then
   docker_install "$kind"

@@ -32,7 +32,7 @@ import numpy
 import server
 
 env = server.env
-URL = (env("UDALLY_URL") or "https://udally.sio2.kr").rstrip("/")
+URL = (env("UDALLY_URL") or "https://udally.quanect.kr").rstrip("/")
 API = "/api/integrations/stt"
 MIN_SEGMENT_MS = 1500  # Node transcribe.mjs MIN_SEGMENT_MS와 같다
 SR = 16000
@@ -967,6 +967,12 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["unlink"]:
         return unlink_self()
     link = load_link()
+    # 공식 도메인 이전: 같은 서비스의 기존 기기 토큰을 유지한다.
+    if link and URL == "https://udally.quanect.kr" and link.get("url") in {
+        "https://udally.sio2.kr", "https://project.sio2.kr"
+    }:
+        link["url"] = URL
+        save_link(link)
     if not link or not link.get("token") or link.get("url") != URL:
         link = device_flow((link or {}).get("machine_id") or str(uuid.uuid4()))
         if not link:

@@ -1,5 +1,5 @@
 #!/bin/sh
-# udally-link 제거(macOS·Linux): curl -fsSL https://udally.sio2.kr/link/uninstall.sh | sh
+# udally-link 제거(macOS·Linux): curl -fsSL https://udally.quanect.kr/link/uninstall.sh | sh
 # 연결돼 있으면 유달리에서 스스로 끊고(DELETE /self), 컨테이너 또는 uv 도구·자동 시작을 지운다. 받은 모델은 남긴다.
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 set -eu

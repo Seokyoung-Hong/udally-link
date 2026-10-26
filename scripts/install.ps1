@@ -1,5 +1,5 @@
-# udally-link 한 줄 설치(Windows PowerShell 5.1·7): irm https://udally.sio2.kr/link/install.ps1 | iex
-# 다시 실행하면 업데이트(이미 연결돼 있으면 다시 연결하지 않음). 제거: irm https://udally.sio2.kr/link/uninstall.ps1 | iex
+# udally-link 한 줄 설치(Windows PowerShell 5.1·7): irm https://udally.quanect.kr/link/install.ps1 | iex
+# 다시 실행하면 업데이트(이미 연결돼 있으면 다시 연결하지 않음). 제거: irm https://udally.quanect.kr/link/uninstall.ps1 | iex
 # 사람 입력을 받지 않는다. 관리자 권한(UAC)을 요구하지 않는다. 토큰을 출력하지 않는다.
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 & {
@@ -27,7 +27,7 @@ $RocmWheels = @(
 
 # ---------- 시험용 덮어쓰기(평소에는 비움) ----------
 function GetEnv($name, $default) { $v = [Environment]::GetEnvironmentVariable($name); if ($v) { $v } else { $default } }
-$UdallyUrl = GetEnv 'UDALLY_URL' 'https://udally.sio2.kr'
+$UdallyUrl = GetEnv 'UDALLY_URL' 'https://udally.quanect.kr'
 $Name = GetEnv 'UDALLY_NAME' 'udally-link'
 $Volume = GetEnv 'UDALLY_VOLUME' 'udally-link'
 $LegacyName = 'udally-stt'  # 옛 이름(컨테이너·볼륨·uv 도구·시작프로그램). 있으면 정리하고 새 이름으로
@@ -176,6 +176,11 @@ function UvInstall($kind) {
 }
 
 $kind = GpuKind
+# 이미지 릴리스 전에는 실행 가능한 uv 설치를 사용한다.
+if (-not $Digest['cpu'] -and -not (GetEnv 'UDALLY_IMAGE' '') -and $Force -ne 'docker') {
+  $Force = 'uv'
+  Say '공개 Docker 이미지 릴리스가 없어 uv로 설치합니다.'
+}
 $hasDocker = ($Force -ne 'uv') -and (Get-Command docker -ErrorAction SilentlyContinue) -and (Quiet docker @('info'))
 if (($hasDocker -and $kind -ne 'rocm') -or $Force -eq 'docker') { DockerInstall $kind }
 else {

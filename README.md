@@ -14,12 +14,12 @@
 
 | OS | 설치·업데이트(같은 명령) | 제거 |
 |---|---|---|
-| Windows (PowerShell 5.1·7) | `irm https://udally.sio2.kr/link/install.ps1 \| iex` | `irm https://udally.sio2.kr/link/uninstall.ps1 \| iex` |
-| macOS · Linux | `curl -fsSL https://udally.sio2.kr/link/install.sh \| sh` | `curl -fsSL https://udally.sio2.kr/link/uninstall.sh \| sh` |
+| Windows (PowerShell 5.1·7) | `irm https://udally.quanect.kr/link/install.ps1 \| iex` | `irm https://udally.quanect.kr/link/uninstall.ps1 \| iex` |
+| macOS · Linux | `curl -fsSL https://udally.quanect.kr/link/install.sh \| sh` | `curl -fsSL https://udally.quanect.kr/link/uninstall.sh \| sh` |
 
 - 실행 전에 내용을 보고 싶으면 위 주소를 브라우저로 여세요(유달리가 이 저장소의 고정 커밋 `scripts/` 원본으로 보냅니다).
 - 스크립트는 관리자 권한(sudo·UAC)을 요구하지 않고, 사람 입력을 받지 않으며, 토큰을 출력하지 않습니다.
-- 화면에 나온 주소(`https://udally.sio2.kr/link`)를 직접 열고 **PC 화면의 코드를 손으로 입력**한 뒤 [허용]합니다. 코드가 든 링크를 남에게 받았다면 누르지 마세요.
+- 화면에 나온 주소(`https://udally.quanect.kr/link`)를 직접 열고 **PC 화면의 코드를 손으로 입력**한 뒤 [허용]합니다. 코드가 든 링크를 남에게 받았다면 누르지 마세요.
 - **Docker가 있으면** GHCR 이미지(digest 고정)를 받아 `udally-link` 컨테이너(`--restart unless-stopped`, 볼륨 `udally-link:/cache`)로 띄웁니다. 토큰은 볼륨에 남으므로 다시 실행 = 업데이트이고 다시 연결하지 않습니다.
 - **Docker가 없으면(또는 AMD GPU면)** [uv](https://docs.astral.sh/uv/)(버전 고정)로 사용자 영역에 설치하고 로그인 때 자동으로 켭니다(Windows 시작프로그램(창 없이 `conhost --headless`, 로그는 `%LOCALAPPDATA%Dally-linkink.log`), Linux `systemd --user`, macOS LaunchAgent).
 - GPU 판별: NVIDIA > AMD > Intel > CPU(Windows `Win32_VideoController` VEN_10DE/1002/8086, Linux `nvidia-smi`·`/dev/kfd`·`/sys/class/drm/*/device/vendor`). 판별·준비가 실패하면 CPU로 내립니다.
@@ -45,7 +45,7 @@ docker logs -f udally-link     # 기기 인증 주소·코드
 docker compose -f compose.yaml -f compose.link.yaml up -d   # GPU면 compose.cuda.yaml 등을 함께
 ```
 
-- 유달리 주소는 `UDALLY_URL`(기본 `https://udally.sio2.kr`). 토큰 파일은 `LINK_FILE`(Docker `/cache/udally-link.json`, Windows `%APPDATA%\udally-link\link.json`, 그 밖 `~/.config/udally-link/link.json`, POSIX 0600). 로그에는 토큰 앞 12자만 남깁니다.
+- 유달리 주소는 `UDALLY_URL`(기본 `https://udally.quanect.kr`). 토큰 파일은 `LINK_FILE`(Docker `/cache/udally-link.json`, Windows `%APPDATA%\udally-link\link.json`, 그 밖 `~/.config/udally-link/link.json`, POSIX 0600). 로그에는 토큰 앞 12자만 남깁니다.
 - 동작: 5초마다 heartbeat로 모델 목록을 보내고 [모델 적용]·작업을 받습니다. 작업은 트랙·녹음을 내려받아 PC 안에서 구간을 잘라 전사하고 구간별 결과만 올립니다(이름 목록은 받지 않음). 받은 오디오는 작업이 끝나면 지웁니다.
 - 끊김: 네트워크 오류·5xx는 2·4·8…60초 백오프, 401(유달리에서 끊음)은 토큰 파일을 지우고 종료 코드 3, 426(업데이트 필요)은 4.
 - 연결 모드는 포트를 열지 않습니다. Docker HEALTHCHECK는 마지막 heartbeat 성공 시각(2분 안)으로 봅니다.
@@ -113,7 +113,7 @@ LINK_API_KEY=... LINK_HOST=0.0.0.0 LINK_PORT=8000 uv run server.py
 | `LINK_COMPUTE_TYPE` | 자동 | 정하면 정밀도를 고정합니다(자동 강등 안 함). |
 | `LINK_CONCURRENCY` | `3` | 동시 처리 수. 유달리는 3요청을 동시에 보냅니다. |
 | `LINK_HOST` / `LINK_PORT` | `127.0.0.1` / `8000` | uv 실행 때 여는 주소. Docker는 `LINK_BIND` / `LINK_PORT`(호스트 쪽)를 씁니다. |
-| `UDALLY_URL` | `https://udally.sio2.kr` | 연결 모드가 부를 유달리 주소 |
+| `UDALLY_URL` | `https://udally.quanect.kr` | 연결 모드가 부를 유달리 주소 |
 | `UDALLY_AI_HOSTS` | (비움) | AI 거쳐 보내기로 부를 수 있는 LAN 호스트(쉼표). 루프백·`host.docker.internal`은 늘 허용 |
 | `LINK_FILE` | 0절 | 연결 토큰 파일 위치 |
 | `LINK_NAME` | 컴퓨터 이름 | 연결할 때 보낼 기기 이름(50자, 유달리 확인 화면에서 고칠 수 있음) |

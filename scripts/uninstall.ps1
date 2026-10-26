@@ -1,4 +1,4 @@
-# udally-link 제거(Windows): irm https://udally.sio2.kr/link/uninstall.ps1 | iex
+# udally-link 제거(Windows): irm https://udally.quanect.kr/link/uninstall.ps1 | iex
 # 연결돼 있으면 유달리에서 스스로 끊고(DELETE /self), 컨테이너 또는 uv 도구·시작프로그램 바로가기를 지운다. 받은 모델은 남긴다.
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 & {
