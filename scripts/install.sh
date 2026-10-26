@@ -33,19 +33,55 @@ fail() { say "오류: $*" >&2; exit 1; }
 case "$UDALLY_URL" in https://*|http://127.0.0.1*|http://localhost*|http://host.docker.internal*) ;; *) fail "UDALLY_URL은 https:// 주소여야 합니다." ;; esac
 
 # curl | sh의 표준 입력은 스크립트이므로 사용자 선택은 전용 터미널에서 읽는다.
-choose() {
+choose() (
   title=$1; shift
+  choice_count=$#
+  selected=${MENU_DEFAULT:-1}
+  if [ "${UDALLY_TUI:-1}" != 0 ] && [ -t 2 ] && [ "${TERM:-dumb}" != dumb ] && saved_tty=$(stty -g <&3 2>/dev/null); then
+    trap 'stty "$saved_tty" <&3; printf "\033[?25h" >&2' 0
+    trap 'exit 130' 1 2 15
+    stty -echo -icanon min 0 time 1 <&3
+    printf '\033[?25l' >&2
+    esc=$(printf '\033'); redraw=1
+    while :; do
+      if [ "$redraw" = 1 ]; then
+      printf '\033[2J\033[H  유달리 PC 연결 설치\n\n  %s\n\n' "$title" >&2
+      row=0
+      for item do
+        row=$((row + 1))
+        if [ "$row" = "$selected" ]; then printf '  \033[36m> %s\033[0m\n' "$item" >&2
+        else printf '    %s\n' "$item" >&2; fi
+      done
+      printf '\n  ↑↓ 이동 · Enter 선택 · Esc 취소\n' >&2
+      fi
+      redraw=0
+      key=$(dd bs=1 count=3 <&3 2>/dev/null; printf '.')
+      key=${key%.}
+      case "$key" in
+        "${esc}[A"|"${esc}OA") selected=$(((selected + choice_count - 2) % choice_count + 1)); redraw=1 ;;
+        "${esc}[B"|"${esc}OB") selected=$((selected % choice_count + 1)); redraw=1 ;;
+        "${esc}[H"|"${esc}OH") selected=1; redraw=1 ;;
+        "${esc}[F"|"${esc}OF") selected=$choice_count; redraw=1 ;;
+        "$esc") printf '설치를 취소했습니다.\n' >&2; exit 130 ;;
+        '') continue ;;
+        "$(printf '\r')"|'
+') printf '%s' "$selected"; exit 0 ;;
+        "$(printf '\003')"|"$(printf '\004')") exit 130 ;;
+      esac
+    done
+  fi
   printf '%s\n' "$title" >&2
-  choice_count=0
-  for item do choice_count=$((choice_count + 1)); printf '%s. %s\n' "$choice_count" "$item" >&2; done
+  row=0
+  for item do row=$((row + 1)); printf '%s. %s\n' "$row" "$item" >&2; done
   while :; do
-    printf '번호 선택 (Enter: 1): ' >&2
+    printf '번호 선택 (Enter: %s): ' "$selected" >&2
     IFS= read -r answer <&3 || fail "입력이 종료되었습니다."
-    answer=${answer:-1}
+    answer=${answer:-$selected}
     case "$answer" in *[!0-9]*|'') ;; *) if [ "$answer" -ge 1 ] && [ "$answer" -le "$choice_count" ]; then printf '%s' "$answer"; return; fi ;; esac
     printf '표시된 번호를 입력해 주세요.\n' >&2
   done
-}
+)
+
 AUTOSTART=${UDALLY_AUTOSTART:-1}
 LINK_DEVICE=${LINK_DEVICE:-auto}
 LINK_GPUS=${LINK_GPUS:-}
@@ -58,32 +94,63 @@ select_options() {
     if [ "$DRY" = 1 ] || ! ( : </dev/tty ) 2>/dev/null; then mode=auto
     else
       exec 3</dev/tty
-      case "$(choose '설치 방법을 선택해 주세요.' '자동 설치 (권장)' '세부 설정')" in 1) mode=auto ;; 2) mode=advanced ;; esac
+      selected_mode=$(choose '설치 방법을 선택해 주세요.' '자동 설치 (권장)' '세부 설정') || exit $?
+      case "$selected_mode" in 1) mode=auto ;; 2) mode=advanced ;; esac
     fi
   fi
   if [ "$mode" = auto ]; then say '자동 설치: 장치 자동 감지 · GPU 오류 시 중단 · 자동 시작'; return; fi
   exec 3</dev/tty
-  case "$(choose '설치 방식' '자동 감지' 'uv' 'Docker')" in 1) FORCE='' ;; 2) FORCE=uv ;; 3) FORCE=docker ;; esac
-  if [ "$FORCE" = docker ] && [ -z "$DIGEST_CPU" ] && [ -z "${UDALLY_IMAGE:-}" ]; then say '공개 Docker 이미지가 아직 없어 uv로 설치합니다.'; FORCE=uv; fi
-  case "$(choose '처리 장치' '자동 감지 (GPU 우선)' 'GPU' 'CPU')" in
-    1) GPU_FORCE=''; LINK_DEVICE=auto ;;
-    2) GPU_FORCE=$(gpu_kind); [ "$GPU_FORCE" != cpu ] || fail '사용할 GPU를 찾지 못했습니다.'; LINK_DEVICE=$GPU_FORCE ;;
-    3) GPU_FORCE=cpu; LINK_DEVICE=cpu ;;
-  esac
-  LINK_GPUS=''
-  if [ "$(gpu_kind)" = cuda ]; then
-    nvidia-smi --query-gpu=index,name --format=csv,noheader >&2 || true
-    while :; do
-      printf '사용할 GPU 번호 (Enter: 전체, 여러 개는 0,1): ' >&2
-      IFS= read -r LINK_GPUS <&3 || fail '입력이 종료되었습니다.'
-      [ -z "$LINK_GPUS" ] && break
-      printf '%s' "$LINK_GPUS" | grep -Eq '^[0-9]+(,[0-9]+)*$' && break
-    done
-  fi
-  case "$(choose 'GPU 오류 시' '중단 (권장)' 'CPU로 전환')" in 1) LINK_CPU_FALLBACK=0 ;; 2) LINK_CPU_FALLBACK=1 ;; esac
-  case "$(choose '로그인할 때 자동 시작' '켜기' '끄기')" in 1) AUTOSTART=1 ;; 2) AUTOSTART=0 ;; esac
-  printf 'PC 이름 (Enter: 컴퓨터 이름): ' >&2
-  IFS= read -r LINK_NAME <&3 || fail '입력이 종료되었습니다.'
+  focus=1
+  while :; do
+    case "$FORCE" in uv) method_name=uv ;; docker) method_name=Docker ;; *) method_name='자동 감지' ;; esac
+    case "$LINK_DEVICE" in cpu) device_name=CPU ;; auto) device_name='자동 감지 (GPU 우선)' ;; *) device_name=GPU ;; esac
+    fallback_name='중단'; [ "$LINK_CPU_FALLBACK" = 0 ] || fallback_name='CPU로 전환'
+    start_name='켜기'; [ "$AUTOSTART" = 1 ] || start_name='끄기'
+    focus=$(MENU_DEFAULT=$focus choose '세부 설정 · 항목을 선택해 변경하세요.' \
+      "설치 방식 : $method_name" "처리 장치 : $device_name" "사용할 GPU : ${LINK_GPUS:-전체}" \
+      "GPU 오류 시 : $fallback_name" "자동 시작 : $start_name" "PC 이름 : ${LINK_NAME:-컴퓨터 이름}" '설치 시작' '취소') || exit $?
+    case "$focus" in
+      1)
+        answer=$(choose '설치 방식' '자동 감지' 'uv' 'Docker') || exit $?
+        case "$answer" in 1) FORCE='' ;; 2) FORCE=uv ;; 3) FORCE=docker ;; esac
+        if [ "$FORCE" = docker ] && [ -z "$DIGEST_CPU" ] && [ -z "${UDALLY_IMAGE:-}" ]; then say '공개 Docker 이미지가 아직 없어 uv로 설치합니다.'; FORCE=uv; fi ;;
+      2)
+        answer=$(choose '처리 장치' '자동 감지 (GPU 우선)' 'GPU' 'CPU') || exit $?
+        case "$answer" in
+          1) GPU_FORCE=''; LINK_DEVICE=auto ;;
+          2) GPU_FORCE=''; GPU_FORCE=$(gpu_kind); [ "$GPU_FORCE" != cpu ] || fail '사용할 GPU를 찾지 못했습니다.'; LINK_DEVICE=$GPU_FORCE ;;
+          3) GPU_FORCE=cpu; LINK_DEVICE=cpu; LINK_GPUS='' ;;
+        esac ;;
+      3)
+        if [ "$(gpu_kind)" != cuda ]; then say 'GPU 번호 선택은 NVIDIA GPU에서 사용할 수 있습니다.'; continue; fi
+        nvidia-smi --query-gpu=index,name --format=csv,noheader >&2 || true
+        while :; do
+          printf '사용할 GPU 번호 (Enter: 전체, 여러 개는 0,1): ' >&2
+          IFS= read -r LINK_GPUS <&3 || fail '입력이 종료되었습니다.'
+          [ -z "$LINK_GPUS" ] && break
+          if printf '%s' "$LINK_GPUS" | grep -Eq '^[0-9]+(,[0-9]+)*$'; then
+            available=$(nvidia-smi --query-gpu=index --format=csv,noheader)
+            valid=1; old_ifs=$IFS; IFS=,
+            for id in $LINK_GPUS; do printf '%s\n' "$available" | grep -qx "$id" || valid=0; done
+            IFS=$old_ifs
+            [ "$valid" = 1 ] && break
+          fi
+          printf '표시된 GPU 번호를 쉼표로 구분해 주세요.\n' >&2
+        done ;;
+      4)
+        answer=$(choose 'GPU 오류 시' '중단 (권장)' 'CPU로 전환') || exit $?
+        case "$answer" in 1) LINK_CPU_FALLBACK=0 ;; 2) LINK_CPU_FALLBACK=1 ;; esac ;;
+      5)
+        answer=$(choose '로그인할 때 자동 시작' '켜기' '끄기') || exit $?
+        case "$answer" in 1) AUTOSTART=1 ;; 2) AUTOSTART=0 ;; esac ;;
+      6)
+        printf 'PC 이름 (Enter: 컴퓨터 이름): ' >&2
+        IFS= read -r LINK_NAME <&3 || fail '입력이 종료되었습니다.' ;;
+      7) break ;;
+      8) fail '설치를 취소했습니다.' ;;
+    esac
+  done
+
   exec 3<&-
 }
 save_options() {

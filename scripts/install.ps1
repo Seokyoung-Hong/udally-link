@@ -45,15 +45,50 @@ if ($UdallyUrl -notmatch '^(https://|http://(127\.0\.0\.1|localhost|host\.docker
 function Say($t) { Write-Host $t }
 function Run([string]$exe, [string[]]$argv) {
   if ($Dry) { Say ("[dry-run] $exe " + ($argv -join ' ')); return 0 }
-  & $exe @argv | Out-Host
-  return $LASTEXITCODE
+  Write-Progress -Activity '유달리 PC 연결 설치' -Status "$exe 실행 중"
+  try { & $exe @argv | Out-Host; $code = $LASTEXITCODE }
+  finally { Write-Progress -Activity '유달리 PC 연결 설치' -Completed }
+  return $code
 }
 function Quiet([string]$exe, [string[]]$argv) {
   $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
   try { & $exe @argv *> $null; return ($LASTEXITCODE -eq 0) } catch { return $false } finally { $ErrorActionPreference = $old }
 }
 
+function Test-TuiSupport {
+  if ((GetEnv 'UDALLY_TUI' '') -eq '0' -or [Console]::IsInputRedirected) { return $false }
+  try { return $Host.UI.RawUI.WindowSize.Width -ge 40 } catch { return $false }
+}
+function Read-TuiKey { return $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown').VirtualKeyCode }
+function Show-TuiMenu($title, $items, $selected) {
+  Clear-Host
+  Write-Host '  유달리 PC 연결 설치' -ForegroundColor Cyan
+  Write-Host ''
+  Write-Host "  $title"
+  Write-Host ''
+  for ($i = 0; $i -lt $items.Count; $i++) {
+    if ($i -eq $selected) { Write-Host ("  > " + $items[$i]) -ForegroundColor Cyan }
+    else { Write-Host ("    " + $items[$i]) }
+  }
+  Write-Host ''
+  Write-Host '  ↑↓ 이동 · Enter 선택 · Esc 취소' -ForegroundColor DarkGray
+}
 function Choose($title, $items, $default = 1) {
+  if (Test-TuiSupport) {
+    $selected = $default - 1
+    while ($true) {
+      try { Show-TuiMenu $title $items $selected; $key = Read-TuiKey }
+      catch { break } # 화면 제어가 없는 호스트는 번호 입력으로 전환
+      switch ($key) {
+        38 { $selected = ($selected + $items.Count - 1) % $items.Count }
+        40 { $selected = ($selected + 1) % $items.Count }
+        36 { $selected = 0 }
+        35 { $selected = $items.Count - 1 }
+        13 { return ($selected + 1) }
+        27 { throw [OperationCanceledException]::new('설치를 취소했습니다.') }
+      }
+    }
+  }
   Say $title
   for ($i = 0; $i -lt $items.Count; $i++) { Say ("{0}. {1}" -f ($i + 1), $items[$i]) }
   while ($true) {
@@ -80,30 +115,59 @@ function SelectOptions {
     else { $mode = 'auto' }
   }
   if ($mode -eq 'auto') { Say '자동 설치: 장치 자동 감지 · GPU 오류 시 중단 · 자동 시작'; return }
-  $method = Choose '설치 방식' @('자동 감지', 'uv', 'Docker')
-  $Force = @('', 'uv', 'docker')[$method - 1]
-  if ($Force -eq 'docker' -and -not $Digest['cpu'] -and -not (GetEnv 'UDALLY_IMAGE' '')) {
-    Say '공개 Docker 이미지가 아직 없어 uv로 설치합니다.'
-    $Force = 'uv'
-  }
-  $device = Choose '처리 장치' @('자동 감지 (GPU 우선)', 'GPU', 'CPU')
-  if ($device -eq 3) { $GpuForce = 'cpu'; $Options.LINK_DEVICE = 'cpu' }
-  elseif ($device -eq 2) {
-    $GpuForce = GpuKind
-    if ($GpuForce -eq 'cpu') { throw '사용할 GPU를 찾지 못했습니다.' }
-    $Options.LINK_DEVICE = $GpuForce
-  } else { $GpuForce = ''; $Options.LINK_DEVICE = 'auto' }
-  if ($device -ne 3 -and (GpuKind) -eq 'cuda') {
-    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { & nvidia-smi --query-gpu=index,name --format=csv,noheader | Out-Host }
-    while ($true) {
-      $ids = Read-Host '사용할 GPU 번호 (Enter: 전체, 여러 개는 0,1)'
-      if (-not $ids -or $ids -match '^\d+(,\d+)*$') { $Options.LINK_GPUS = $ids; break }
-      Say 'GPU 번호를 쉼표로 구분해 주세요.'
+  $focus = 1
+  while ($true) {
+    $methodName = switch ($Force) { 'uv' { 'uv' } 'docker' { 'Docker' } default { '자동 감지' } }
+    $deviceName = switch ($Options.LINK_DEVICE) { 'cpu' { 'CPU' } 'auto' { '자동 감지 (GPU 우선)' } default { 'GPU' } }
+    $gpuName = if ($Options.LINK_GPUS) { $Options.LINK_GPUS } else { '전체' }
+    $fallbackName = if ($Options.LINK_CPU_FALLBACK -eq '1') { 'CPU로 전환' } else { '중단' }
+    $startName = if ($AutoStart) { '켜기' } else { '끄기' }
+    $pcName = if ($Options.LINK_NAME) { $Options.LINK_NAME } else { '컴퓨터 이름' }
+    $focus = Choose '세부 설정 · 항목을 선택해 변경하세요.' @(
+      "설치 방식     : $methodName", "처리 장치     : $deviceName", "사용할 GPU    : $gpuName",
+      "GPU 오류 시   : $fallbackName", "자동 시작     : $startName", "PC 이름       : $pcName", '설치 시작', '취소'
+    ) $focus
+    switch ($focus) {
+      1 {
+        $method = Choose '설치 방식' @('자동 감지', 'uv', 'Docker')
+        $Force = @('', 'uv', 'docker')[$method - 1]
+        if ($Force -eq 'docker' -and -not $Digest['cpu'] -and -not (GetEnv 'UDALLY_IMAGE' '')) {
+          Say '공개 Docker 이미지가 아직 없습니다. uv로 설치합니다.'
+          $Force = 'uv'
+        }
+      }
+      2 {
+        $device = Choose '처리 장치' @('자동 감지 (GPU 우선)', 'GPU', 'CPU')
+        if ($device -eq 3) { $GpuForce = 'cpu'; $Options.LINK_DEVICE = 'cpu'; $Options.LINK_GPUS = '' }
+        elseif ($device -eq 2) {
+          $GpuForce = ''; $GpuForce = GpuKind
+          if ($GpuForce -eq 'cpu') { throw '사용할 GPU를 찾지 못했습니다.' }
+          $Options.LINK_DEVICE = $GpuForce
+        } else { $GpuForce = ''; $Options.LINK_DEVICE = 'auto' }
+      }
+      3 {
+        if ((GpuKind) -ne 'cuda') { Say 'GPU 번호 선택은 NVIDIA GPU에서 사용할 수 있습니다.'; continue }
+        $available = @()
+        if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+          & nvidia-smi --query-gpu=index,name --format=csv,noheader | Out-Host
+          $available = @(& nvidia-smi --query-gpu=index --format=csv,noheader | ForEach-Object { $_.Trim() })
+        }
+        while ($true) {
+          $ids = [string](Read-Host '사용할 GPU 번호 (Enter: 전체, 여러 개는 0,1)')
+          if (-not $ids) { $Options.LINK_GPUS = ''; break }
+          if ($ids -match '^\d+(,\d+)*$' -and -not @($ids.Split(',') | Where-Object { $available -notcontains $_ }).Count) { $Options.LINK_GPUS = $ids; break }
+          Say '표시된 GPU 번호를 쉼표로 구분해 주세요.'
+        }
+      }
+      4 { $Options.LINK_CPU_FALLBACK = if ((Choose 'GPU 오류 시' @('중단 (권장)', 'CPU로 전환')) -eq 1) { '0' } else { '1' } }
+      5 { $AutoStart = (Choose '로그인할 때 자동 시작' @('켜기', '끄기')) -eq 1 }
+      6 { $Options.LINK_NAME = [string](Read-Host 'PC 이름 (Enter: 컴퓨터 이름)') }
+      7 { break }
+      8 { throw [OperationCanceledException]::new('설치를 취소했습니다.') }
     }
-  } else { $Options.LINK_GPUS = '' }
-  $Options.LINK_CPU_FALLBACK = if ((Choose 'GPU 오류 시' @('중단 (권장)', 'CPU로 전환')) -eq 1) { '0' } else { '1' }
-  $AutoStart = (Choose '로그인할 때 자동 시작' @('켜기', '끄기')) -eq 1
-  $Options.LINK_NAME = Read-Host 'PC 이름 (Enter: 컴퓨터 이름)'
+    if ($focus -eq 7) { break }
+  }
+
 }
 
 function SaveOptions {

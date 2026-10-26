@@ -126,6 +126,7 @@ lock = threading.Lock()
 sizes: dict[str, int] = {}  # 모델 → 받을 파일 전체 바이트
 weights: dict[str, float] = {}  # 모델 → 가중치 MB(fp16 기준)
 downloading: dict[str, str | None] = {}  # 모델 → 받는 정밀도(저장소가 정밀도마다 다른 실행부만 의미가 있다)
+runtime_errors: dict[str, dict] = {}  # 로드 실패 진단. 성공한 다음에만 지운다.
 errors: dict[str, str] = {}
 levels: dict[str, int] = {}  # OOM 강등 단계
 rtf: dict[str, float] = {}  # 처리시간/오디오길이 이동평균
@@ -223,6 +224,26 @@ def meta(model_id: str) -> dict:
             "format": fmt}
 
 
+def gpu_error_detail(error) -> str:
+    """사용자 경로·예외 원문을 보내지 않고 DLL 파일명만 추린다."""
+    return ", ".join(sorted(set(re.findall(r"(?i)\b[a-z][a-z0-9_]{0,63}\.dll\b", str(error))))[:4])
+
+
+def cpu_state(model_id: str, p: dict, available_gpus: list) -> dict:
+    """진단에는 분류 코드와 DLL 이름만 보낸다. 예외의 경로·사용자 정보는 보내지 않는다."""
+    if p.get("device") != "cpu":
+        return {"cpu_reason": None, "gpu_error_detail": None}
+    if DEVICE == "cpu":
+        reason = "selected"
+    elif gpu_broken:
+        reason = "gpu_library"
+    elif levels.get(model_id, 0) or available_gpus:
+        reason = "gpu_memory"
+    else:
+        reason = "gpu_unavailable"
+    return {"cpu_reason": reason, "gpu_error_detail": gpu_error_detail(" ".join(gpu_broken)) or None}
+
+
 def status_of(model_id: str, hw=None) -> dict:
     item = {"id": model_id, "object": "model", **meta(model_id)}
     rt = runtime(model_id)
@@ -234,12 +255,17 @@ def status_of(model_id: str, hw=None) -> dict:
         item["status"] = "ready" if local(model_id) else "not_downloaded"
         if model_id in errors and item["status"] == "not_downloaded":
             item["error"] = errors[model_id]
-    if current.get("id") == model_id:  # 올라가 있으면 실제 배치를 보여 준다
-        p = current["plan"]
-    else:
-        g, ram = hw if hw and rt is BACKEND else (gpus(rt), ram_free_mb())
-        p = plan_for(model_id, g, ram, levels.get(model_id, 0))
-    item.update(fits=p["fits"], device=p["device"], compute_type=p["compute_type"])
+    g, ram = hw if hw and rt is BACKEND else (gpus(rt), ram_free_mb())
+    planned = plan_for(model_id, g, ram, levels.get(model_id, 0))
+    loaded = current.get("id") == model_id
+    p = current["plan"] if loaded else planned
+    item.update(fits=p["fits"], device=p["device"], compute_type=p["compute_type"],
+                loaded=loaded, loaded_device=p["device"] if loaded else None,
+                loaded_compute_type=p["compute_type"] if loaded else None,
+                planned_device=planned["device"], planned_compute_type=planned["compute_type"],
+                **cpu_state(model_id, p, g))
+    if model_id in runtime_errors:
+        item.update(runtime_errors[model_id])
     if item["status"] == "ready":
         item["rtf"] = round(rtf[model_id], 3) if model_id in rtf else None
     return item
@@ -312,12 +338,17 @@ def load(model_id: str) -> dict:
                     w[2].submit(lambda m=w[0]: list(m.transcribe(
                         numpy.zeros(16000, numpy.float32), language="ko", vad_filter=False)[0])).result()
                 current.update(id=model_id, plan=p, workers=workers)
+                runtime_errors.pop(model_id, None)
                 rtf.pop(model_id, None)
                 log.info("모델 올림 %s %s %s", model_id, p["device"], p["compute_type"])
                 return current
             except Exception as e:
                 if p["device"] == "cpu" or isinstance(e, HTTPException):
                     raise
+                if is_oom(e):
+                    runtime_errors[model_id] = {"runtime_error": "gpu_memory", "runtime_error_detail": None}
+                elif re.search(rt.gpu_error, str(e), re.I):
+                    runtime_errors[model_id] = {"runtime_error": "gpu_library", "runtime_error_detail": gpu_error_detail(e) or None}
                 if not is_oom(e):
                     # GPU 라이브러리 문제만 GPU 고장으로 본다(의존성 누락 등은 그대로 실패시킨다).
                     if not CPU_FALLBACK or not re.search(rt.gpu_error, str(e), re.I):
