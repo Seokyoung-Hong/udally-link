@@ -15,6 +15,7 @@ import contextlib
 import ctypes
 import glob
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -42,12 +43,24 @@ if sys.platform == "win32":
         os.environ["PATH"] = os.pathsep.join(map(str, cuda_bins)) + os.pathsep + os.environ.get("PATH", "")
 
 
+def _install_options():
+    base = Path(os.environ.get("APPDATA") or Path.home()) if sys.platform == "win32" else Path.home() / ".config"
+    try:
+        value = json.loads((base / "udally-link" / "options.json").read_text(encoding="utf-8-sig"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+_INSTALL_OPTIONS = _install_options()
+
+
 def env(name: str, default=None):
     """환경변수. LINK_* 이름이 우선이고, 없으면 udally-stt 시절 이름(STT_*, LINK_FILE은 STT_LINK_FILE)을 읽는다."""
     v = os.environ.get(name)
     if v is None and name.startswith("LINK_"):
         v = os.environ.get("STT_LINK_FILE" if name == "LINK_FILE" else "STT_" + name[5:])
-    return default if v is None else v
+    return _INSTALL_OPTIONS.get(name, default) if v is None else v
 
 
 NEMOTRON = "nvidia/nemotron-3.5-asr-streaming-0.6b"

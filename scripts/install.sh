@@ -1,7 +1,7 @@
 #!/bin/sh
 # udally-link 한 줄 설치(macOS·Linux): curl -fsSL https://udally.quanect.kr/link/install.sh | sh
 # 다시 실행하면 업데이트(이미 연결돼 있으면 다시 연결하지 않음). 제거: curl -fsSL https://udally.quanect.kr/link/uninstall.sh | sh
-# 사람 입력을 받지 않는다(| sh는 표준 입력이 스크립트다). sudo를 쓰지 않는다. 토큰을 출력하지 않는다.
+# 자동 설치 / 세부 설정. 입력은 /dev/tty에서 읽어 curl | sh도 지원한다. sudo 불필요.
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 set -eu
 
@@ -31,6 +31,67 @@ say() { printf '%s\n' "$*"; }
 run() { if [ "$DRY" = 1 ]; then say "[dry-run] $*"; else "$@"; fi; }
 fail() { say "오류: $*" >&2; exit 1; }
 case "$UDALLY_URL" in https://*|http://127.0.0.1*|http://localhost*|http://host.docker.internal*) ;; *) fail "UDALLY_URL은 https:// 주소여야 합니다." ;; esac
+
+# curl | sh의 표준 입력은 스크립트이므로 사용자 선택은 전용 터미널에서 읽는다.
+choose() {
+  title=$1; shift
+  printf '%s\n' "$title" >&2
+  choice_count=0
+  for item do choice_count=$((choice_count + 1)); printf '%s. %s\n' "$choice_count" "$item" >&2; done
+  while :; do
+    printf '번호 선택 (Enter: 1): ' >&2
+    IFS= read -r answer <&3 || fail "입력이 종료되었습니다."
+    answer=${answer:-1}
+    case "$answer" in *[!0-9]*|'') ;; *) if [ "$answer" -ge 1 ] && [ "$answer" -le "$choice_count" ]; then printf '%s' "$answer"; return; fi ;; esac
+    printf '표시된 번호를 입력해 주세요.\n' >&2
+  done
+}
+AUTOSTART=${UDALLY_AUTOSTART:-1}
+LINK_DEVICE=${LINK_DEVICE:-auto}
+LINK_GPUS=${LINK_GPUS:-}
+LINK_CPU_FALLBACK=${LINK_CPU_FALLBACK:-0}
+LINK_NAME=${LINK_NAME:-}
+select_options() {
+  mode=${UDALLY_INSTALL_MODE:-}
+  case "$mode" in ''|auto|advanced) ;; *) fail 'UDALLY_INSTALL_MODE: auto 또는 advanced' ;; esac
+  if [ -z "$mode" ]; then
+    if [ "$DRY" = 1 ] || ! ( : </dev/tty ) 2>/dev/null; then mode=auto
+    else
+      exec 3</dev/tty
+      case "$(choose '설치 방법을 선택해 주세요.' '자동 설치 (권장)' '세부 설정')" in 1) mode=auto ;; 2) mode=advanced ;; esac
+    fi
+  fi
+  if [ "$mode" = auto ]; then say '자동 설치: 장치 자동 감지 · GPU 오류 시 중단 · 자동 시작'; return; fi
+  exec 3</dev/tty
+  case "$(choose '설치 방식' '자동 감지' 'uv' 'Docker')" in 1) FORCE='' ;; 2) FORCE=uv ;; 3) FORCE=docker ;; esac
+  if [ "$FORCE" = docker ] && [ -z "$DIGEST_CPU" ] && [ -z "${UDALLY_IMAGE:-}" ]; then say '공개 Docker 이미지가 아직 없어 uv로 설치합니다.'; FORCE=uv; fi
+  case "$(choose '처리 장치' '자동 감지 (GPU 우선)' 'GPU' 'CPU')" in
+    1) GPU_FORCE=''; LINK_DEVICE=auto ;;
+    2) GPU_FORCE=$(gpu_kind); [ "$GPU_FORCE" != cpu ] || fail '사용할 GPU를 찾지 못했습니다.'; LINK_DEVICE=$GPU_FORCE ;;
+    3) GPU_FORCE=cpu; LINK_DEVICE=cpu ;;
+  esac
+  LINK_GPUS=''
+  if [ "$(gpu_kind)" = cuda ]; then
+    nvidia-smi --query-gpu=index,name --format=csv,noheader >&2 || true
+    while :; do
+      printf '사용할 GPU 번호 (Enter: 전체, 여러 개는 0,1): ' >&2
+      IFS= read -r LINK_GPUS <&3 || fail '입력이 종료되었습니다.'
+      [ -z "$LINK_GPUS" ] && break
+      printf '%s' "$LINK_GPUS" | grep -Eq '^[0-9]+(,[0-9]+)*$' && break
+    done
+  fi
+  case "$(choose 'GPU 오류 시' '중단 (권장)' 'CPU로 전환')" in 1) LINK_CPU_FALLBACK=0 ;; 2) LINK_CPU_FALLBACK=1 ;; esac
+  case "$(choose '로그인할 때 자동 시작' '켜기' '끄기')" in 1) AUTOSTART=1 ;; 2) AUTOSTART=0 ;; esac
+  printf 'PC 이름 (Enter: 컴퓨터 이름): ' >&2
+  IFS= read -r LINK_NAME <&3 || fail '입력이 종료되었습니다.'
+  exec 3<&-
+}
+save_options() {
+  export LINK_DEVICE LINK_GPUS LINK_CPU_FALLBACK LINK_NAME
+  if [ "$DRY" = 1 ]; then say "[dry-run] 설치 설정 저장: $LINK_DEVICE / GPU=$LINK_GPUS / CPU전환=$LINK_CPU_FALLBACK / PC=$LINK_NAME"; return; fi
+  tool_dir=$(uv tool dir)
+  "$tool_dir/udally-link/bin/python" -c 'import os,json,pathlib; p=pathlib.Path.home()/".config/udally-link/options.json"; p.parent.mkdir(parents=True,exist_ok=True); p.write_text(json.dumps({k:os.environ[k] for k in ("LINK_DEVICE","LINK_GPUS","LINK_CPU_FALLBACK","LINK_NAME")},ensure_ascii=False),encoding="utf-8")'
+}
 
 # ---------- GPU 판별: NVIDIA > AMD > Intel > CPU ----------
 gpu_kind() {
@@ -66,7 +127,7 @@ docker_install() {
   kind=$1
   args=""
   case "$kind" in
-    cuda) if [ "$DRY" = 1 ] || docker run --rm --gpus all busybox true >/dev/null 2>&1; then args="--gpus all"; else kind=cpu; fi ;;
+    cuda) if [ "$DRY" = 1 ] || docker run --rm --gpus all busybox true >/dev/null 2>&1; then args="--gpus all"; else [ "$LINK_CPU_FALLBACK" = 1 ] || fail "Docker에서 GPU를 사용할 수 없습니다. uv 설치 또는 GPU 설정을 확인해 주세요."; kind=cpu; fi ;;
     rocm) args="--device /dev/kfd --device /dev/dri --group-add $(stat -c %g /dev/kfd)" ;;
     openvino)
       r=""; for f in /dev/dri/renderD*; do [ -e "$f" ] && { r=$f; break; }; done
@@ -75,7 +136,7 @@ docker_install() {
   ref="${UDALLY_IMAGE:-}"
   if [ -z "$ref" ]; then
     d=$(digest_of "$kind")
-    if [ -z "$d" ] && [ "$kind" != cpu ]; then say "이 GPU용 공개 이미지가 없어 CPU 이미지를 씁니다."; kind=cpu; args=""; d=$DIGEST_CPU; fi
+    if [ -z "$d" ] && [ "$kind" != cpu ]; then fail "이 GPU용 공개 이미지가 없습니다. uv로 설치해 주세요."; fi
     [ -n "$d" ] || fail "릴리스 값(이미지 digest)이 비어 있습니다. 유달리 화면의 설치 명령을 다시 복사해 주세요."
     ref="$IMAGE@$d"
     run docker pull "$ref"
@@ -91,7 +152,8 @@ docker_install() {
   fi
   run docker rm -f "$NAME" >/dev/null 2>&1 || true
   # shellcheck disable=SC2086 # args는 단어로 나뉘어야 한다
-  run docker run -d --name "$NAME" --restart unless-stopped -v "$VOLUME:/cache" -e UDALLY_URL="$UDALLY_URL" $args "$ref" connect >/dev/null
+  restart=unless-stopped; [ "$AUTOSTART" = 1 ] || restart=no
+  run docker run -d --name "$NAME" --restart "$restart" -v "$VOLUME:/cache" -e UDALLY_URL="$UDALLY_URL" -e LINK_DEVICE="$LINK_DEVICE" -e LINK_GPUS="$LINK_GPUS" -e LINK_CPU_FALLBACK="$LINK_CPU_FALLBACK" -e LINK_NAME="$LINK_NAME" $args "$ref" connect >/dev/null
   [ "$DRY" = 1 ] && return
   # 이미 연결됐으면(볼륨에 토큰) 바로 끝. 아니면 기기 인증 주소·코드가 보일 때까지 로그를 보여 준다.
   seen=0 i=0
@@ -126,7 +188,7 @@ uv_install() {
     openvino) extra="[openvino]" ;;
     rocm)
       idx=$(gfx_index)
-      if [ -z "$idx" ]; then say "이 AMD GPU는 CTranslate2 ROCm 휠 대상이 아니라 CPU로 설치합니다."; kind=cpu
+      if [ -z "$idx" ]; then [ "$LINK_CPU_FALLBACK" = 1 ] || fail "이 AMD GPU는 지원 대상이 아닙니다. CPU 사용은 세부 설정에서 선택해 주세요."; say "이 AMD GPU는 CPU로 설치합니다."; kind=cpu; LINK_DEVICE=cpu
       else
         say "AMD GPU는 실험 지원입니다. CTranslate2 ROCm 휠과 ROCm $ROCM_VERSION($idx)을 받습니다(수백 MB)."
         d="$HOME/.cache/udally-link"; run mkdir -p "$d"
@@ -143,8 +205,18 @@ uv_install() {
   say "udally-link $VERSION ($kind, uv)를 설치합니다."
   # shellcheck disable=SC2086
   run uv tool install --force --python 3.12 "udally-link$extra @ $src" $with
+  save_options
   run env UDALLY_URL="$UDALLY_URL" udally-link connect --until-linked
-  autostart
+  if [ "$AUTOSTART" = 1 ]; then autostart
+  else
+    if [ "$(uname -s)" = Darwin ]; then
+      f="$HOME/Library/LaunchAgents/kr.sio2.udally-link.plist"
+      if [ -f "$f" ]; then run launchctl unload "$f" || true; run rm -f "$f"; fi
+    else
+      if command -v systemctl >/dev/null 2>&1; then run systemctl --user disable --now udally-link.service || true; fi
+    fi
+    say '자동 시작을 껐습니다. 직접 켜기: udally-link connect'
+  fi
 }
 
 # udally-stt 시절 uv 도구·자동 시작을 지운다. 연결 토큰(~/.config/udally-stt)은 udally-link가 옮겨 쓴다.
@@ -214,6 +286,8 @@ EOF
   run systemctl --user restart udally-link.service
   say "로그인할 때 자동으로 켜집니다(systemd --user). 상태: systemctl --user status udally-link"
 }
+
+select_options
 
 # 이미지 릴리스 전에는 실행 가능한 uv 설치를 사용한다.
 if [ -z "$DIGEST_CPU" ] && [ -z "${UDALLY_IMAGE:-}" ] && [ "$FORCE" != docker ]; then

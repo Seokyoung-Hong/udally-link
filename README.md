@@ -18,11 +18,13 @@
 | macOS · Linux | `curl -fsSL https://udally.quanect.kr/link/install.sh \| sh` | `curl -fsSL https://udally.quanect.kr/link/uninstall.sh \| sh` |
 
 - 실행 전에 내용을 보고 싶으면 위 주소를 브라우저로 여세요(유달리가 이 저장소의 고정 커밋 `scripts/` 원본으로 보냅니다).
-- 스크립트는 관리자 권한(sudo·UAC)을 요구하지 않고, 사람 입력을 받지 않으며, 토큰을 출력하지 않습니다.
+- 시작하면 **1. 자동 설치 (권장) / 2. 세부 설정**을 선택합니다. Enter는 자동 설치이며 추가 질문 없이 진행합니다.
+- 세부 설정에서는 설치 방식, 처리 장치, NVIDIA GPU 번호, GPU 오류 시 CPU 전환 여부, 자동 시작, PC 이름을 고릅니다. 선택한 실행 설정은 다음 실행에도 유지됩니다.
+- 무인 설치는 `UDALLY_INSTALL_MODE=auto`로 지정합니다. 터미널이 없는 환경과 dry-run은 자동 설치로 진행합니다. 관리자 권한(sudo·UAC)을 요구하지 않고 토큰을 출력하지 않습니다.
 - 화면에 나온 주소(`https://udally.quanect.kr/link`)를 직접 열고 **PC 화면의 코드를 손으로 입력**한 뒤 [허용]합니다. 코드가 든 링크를 남에게 받았다면 누르지 마세요.
 - **Docker가 있으면** GHCR 이미지(digest 고정)를 받아 `udally-link` 컨테이너(`--restart unless-stopped`, 볼륨 `udally-link:/cache`)로 띄웁니다. 토큰은 볼륨에 남으므로 다시 실행 = 업데이트이고 다시 연결하지 않습니다.
 - **Docker가 없으면(또는 AMD GPU면)** [uv](https://docs.astral.sh/uv/)(버전 고정)로 사용자 영역에 설치하고 로그인 때 자동으로 켭니다(Windows 시작프로그램(창 없이 `conhost --headless`, 로그는 `%LOCALAPPDATA%Dally-linkink.log`), Linux `systemd --user`, macOS LaunchAgent).
-- GPU 판별: NVIDIA > AMD > Intel > CPU(Windows `Win32_VideoController` VEN_10DE/1002/8086, Linux `nvidia-smi`·`/dev/kfd`·`/sys/class/drm/*/device/vendor`). 판별·준비가 실패하면 CPU로 내립니다.
+- GPU 판별: NVIDIA > AMD > Intel > CPU(Windows `Win32_VideoController` VEN_10DE/1002/8086, Linux `nvidia-smi`·`/dev/kfd`·`/sys/class/drm/*/device/vendor`). GPU가 없으면 CPU를 사용합니다. 감지한 GPU의 실행 오류는 기본적으로 중단하며, CPU 전환은 세부 설정에서 허용할 수 있습니다.
 
 | GPU | Docker | uv |
 |---|---|---|

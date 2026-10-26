@@ -1,6 +1,6 @@
 # udally-link 한 줄 설치(Windows PowerShell 5.1·7): irm https://udally.quanect.kr/link/install.ps1 | iex
 # 다시 실행하면 업데이트(이미 연결돼 있으면 다시 연결하지 않음). 제거: irm https://udally.quanect.kr/link/uninstall.ps1 | iex
-# 사람 입력을 받지 않는다. 관리자 권한(UAC)을 요구하지 않는다. 토큰을 출력하지 않는다.
+# 자동 설치 / 세부 설정. UDALLY_INSTALL_MODE=auto로 무인 설치. 관리자 권한 불필요.
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 & {
 $ErrorActionPreference = 'Stop'
@@ -53,6 +53,67 @@ function Quiet([string]$exe, [string[]]$argv) {
   try { & $exe @argv *> $null; return ($LASTEXITCODE -eq 0) } catch { return $false } finally { $ErrorActionPreference = $old }
 }
 
+function Choose($title, $items, $default = 1) {
+  Say $title
+  for ($i = 0; $i -lt $items.Count; $i++) { Say ("{0}. {1}" -f ($i + 1), $items[$i]) }
+  while ($true) {
+    $answer = Read-Host "번호 선택 (Enter: $default)"
+    if (-not $answer) { return $default }
+    if ($answer -match '^[0-9]+$' -and [int]$answer -ge 1 -and [int]$answer -le $items.Count) { return [int]$answer }
+    Say '표시된 번호를 입력해 주세요.'
+  }
+}
+
+$AutoStart = (GetEnv 'UDALLY_AUTOSTART' '1') -eq '1'
+$Options = @{
+  LINK_DEVICE = GetEnv 'LINK_DEVICE' 'auto'
+  LINK_GPUS = GetEnv 'LINK_GPUS' ''
+  LINK_CPU_FALLBACK = GetEnv 'LINK_CPU_FALLBACK' '0'
+  LINK_NAME = GetEnv 'LINK_NAME' ''
+}
+function SelectOptions {
+  $mode = GetEnv 'UDALLY_INSTALL_MODE' ''
+  if ($mode -and $mode -notin @('auto', 'advanced')) { throw 'UDALLY_INSTALL_MODE: auto 또는 advanced' }
+  if (-not $mode) {
+    if ($Dry -or [Console]::IsInputRedirected) { $mode = 'auto' }
+    elseif ((Choose '설치 방법을 선택해 주세요.' @('자동 설치 (권장)', '세부 설정')) -eq 2) { $mode = 'advanced' }
+    else { $mode = 'auto' }
+  }
+  if ($mode -eq 'auto') { Say '자동 설치: 장치 자동 감지 · GPU 오류 시 중단 · 자동 시작'; return }
+  $method = Choose '설치 방식' @('자동 감지', 'uv', 'Docker')
+  $Force = @('', 'uv', 'docker')[$method - 1]
+  if ($Force -eq 'docker' -and -not $Digest['cpu'] -and -not (GetEnv 'UDALLY_IMAGE' '')) {
+    Say '공개 Docker 이미지가 아직 없어 uv로 설치합니다.'
+    $Force = 'uv'
+  }
+  $device = Choose '처리 장치' @('자동 감지 (GPU 우선)', 'GPU', 'CPU')
+  if ($device -eq 3) { $GpuForce = 'cpu'; $Options.LINK_DEVICE = 'cpu' }
+  elseif ($device -eq 2) {
+    $GpuForce = GpuKind
+    if ($GpuForce -eq 'cpu') { throw '사용할 GPU를 찾지 못했습니다.' }
+    $Options.LINK_DEVICE = $GpuForce
+  } else { $GpuForce = ''; $Options.LINK_DEVICE = 'auto' }
+  if ($device -ne 3 -and (GpuKind) -eq 'cuda') {
+    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { & nvidia-smi --query-gpu=index,name --format=csv,noheader | Out-Host }
+    while ($true) {
+      $ids = Read-Host '사용할 GPU 번호 (Enter: 전체, 여러 개는 0,1)'
+      if (-not $ids -or $ids -match '^\d+(,\d+)*$') { $Options.LINK_GPUS = $ids; break }
+      Say 'GPU 번호를 쉼표로 구분해 주세요.'
+    }
+  } else { $Options.LINK_GPUS = '' }
+  $Options.LINK_CPU_FALLBACK = if ((Choose 'GPU 오류 시' @('중단 (권장)', 'CPU로 전환')) -eq 1) { '0' } else { '1' }
+  $AutoStart = (Choose '로그인할 때 자동 시작' @('켜기', '끄기')) -eq 1
+  $Options.LINK_NAME = Read-Host 'PC 이름 (Enter: 컴퓨터 이름)'
+}
+
+function SaveOptions {
+  if ($Dry) { Say ('[dry-run] 설치 설정 저장: ' + ($Options | ConvertTo-Json -Compress)); return }
+  $dir = Join-Path $env:APPDATA 'udally-link'
+  New-Item -ItemType Directory -Force $dir | Out-Null
+  [IO.File]::WriteAllText((Join-Path $dir 'options.json'), ($Options | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
+  foreach ($key in $Options.Keys) { [Environment]::SetEnvironmentVariable($key, $Options[$key], 'Process') }
+}
+
 # ---------- GPU 판별: NVIDIA > AMD > Intel > CPU ----------
 function GpuKind {
   if ($GpuForce) { return $GpuForce }
@@ -67,7 +128,9 @@ function GpuKind {
 function DockerInstall($kind) {
   $gpuArgs = @()
   if ($kind -eq 'cuda') {
-    if ($Dry -or (Quiet docker @('run', '--rm', '--gpus', 'all', 'busybox', 'true'))) { $gpuArgs = @('--gpus', 'all') } else { $kind = 'cpu' }
+    if ($Dry -or (Quiet docker @('run', '--rm', '--gpus', 'all', 'busybox', 'true'))) { $gpuArgs = @('--gpus', 'all') }
+    elseif ($Options.LINK_CPU_FALLBACK -eq '1') { $kind = 'cpu' }
+    else { throw 'Docker에서 GPU를 사용할 수 없습니다. uv 설치 또는 GPU 설정을 확인해 주세요.' }
   } elseif ($kind -eq 'openvino') {
     # Docker Desktop(WSL2)에서 Intel GPU: OpenVINO 공식 안내
     $gpuArgs = @('--device', '/dev/dxg', '-v', '/usr/lib/wsl:/usr/lib/wsl')
@@ -75,7 +138,7 @@ function DockerInstall($kind) {
   $ref = GetEnv 'UDALLY_IMAGE' ''
   if (-not $ref) {
     $d = $Digest[$kind]
-    if (-not $d -and $kind -ne 'cpu') { Say '이 GPU용 공개 이미지가 없어 CPU 이미지를 씁니다.'; $kind = 'cpu'; $gpuArgs = @(); $d = $Digest['cpu'] }
+    if (-not $d -and $kind -ne 'cpu') { throw '이 GPU용 공개 이미지가 없습니다. uv로 설치해 주세요.' }
     if (-not $d) { throw '릴리스 값(이미지 digest)이 비어 있습니다. 유달리 화면의 설치 명령을 다시 복사해 주세요.' }
     $ref = "$Image@$d"
     if ((Run docker @('pull', $ref)) -ne 0) { throw "이미지를 받지 못했습니다: $ref" }
@@ -89,7 +152,10 @@ function DockerInstall($kind) {
     if ($Dry) { Say "[dry-run] docker rm -f $LegacyName" } else { Quiet docker @('rm', '-f', $LegacyName) | Out-Null }
   }
   if (-not $Dry) { Quiet docker @('rm', '-f', $Name) | Out-Null } else { Say "[dry-run] docker rm -f $Name" }
-  $argv = @('run', '-d', '--name', $Name, '--restart', 'unless-stopped', '-v', "${vol}:/cache", '-e', "UDALLY_URL=$UdallyUrl") + $gpuArgs + @($ref, 'connect')
+  $restart = if ($AutoStart) { 'unless-stopped' } else { 'no' }
+  $optionArgs = @()
+  foreach ($key in $Options.Keys) { $optionArgs += @('-e', "$key=$($Options[$key])") }
+  $argv = @('run', '-d', '--name', $Name, '--restart', $restart, '-v', "${vol}:/cache", '-e', "UDALLY_URL=$UdallyUrl") + $optionArgs + $gpuArgs + @($ref, 'connect')
   if ($Dry) { Say ('[dry-run] docker ' + ($argv -join ' ')) }
   else { & docker @argv | Out-Null; if ($LASTEXITCODE -ne 0) { throw '컨테이너를 시작하지 못했습니다.' } }
   if ($Dry) { return }
@@ -156,6 +222,7 @@ function UvInstall($kind) {
   # 실행 중이면 Windows가 exe를 잠가 uv가 덮어쓰지 못한다(업데이트 실패). 설치 전에 끈다(자식 python까지).
   if (-not $Dry) { Get-Process -Name 'udally-link' -ErrorAction SilentlyContinue | ForEach-Object { & taskkill.exe /PID $_.Id /T /F 2>$null | Out-Null } }
   if ((Run uv (@('tool', 'install', '--force', '--python', '3.12', "udally-link$extra @ $src") + $with)) -ne 0) { throw 'uv 설치에 실패했습니다.' }
+  SaveOptions
   $env:UDALLY_URL = $UdallyUrl
   $exe = Join-Path $bin 'udally-link.exe'
   if ((Run $exe @('connect', '--until-linked')) -ne 0) { throw '연결하지 못했습니다.' }
@@ -165,19 +232,23 @@ function UvInstall($kind) {
   $conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
   $logFile = Join-Path $env:LOCALAPPDATA 'udally-link\link.log'
   $runArgs = "--headless `"$exe`" connect"
-  if ($Dry) { Say "[dry-run] shortcut $lnk -> $conhost $runArgs (log $logFile)" }
+  if ($Dry) { Say "[dry-run] 자동 시작=$AutoStart (log $logFile)" }
   else {
-    $s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
-    $s.TargetPath = $conhost; $s.Arguments = $runArgs; $s.WindowStyle = 7; $s.Save()
+    if ($AutoStart) {
+      $s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+      $s.TargetPath = $conhost; $s.Arguments = $runArgs; $s.WindowStyle = 7; $s.Save()
+    } else { Remove-Item -LiteralPath $lnk -ErrorAction SilentlyContinue }
     [Environment]::SetEnvironmentVariable('UDALLY_URL', $UdallyUrl, 'User')
     [Environment]::SetEnvironmentVariable('LINK_LOG_FILE', $logFile, 'User'); $env:LINK_LOG_FILE = $logFile
     Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | Stop-Process -Force
     Start-Process $conhost -ArgumentList $runArgs -WindowStyle Hidden
   }
   Say "로그는 $logFile 에 남습니다."
-  Say '로그인할 때 자동으로 켜집니다(시작프로그램).'
+  if ($AutoStart) { Say '로그인할 때 자동으로 켜집니다(시작프로그램).' }
+  else { Say '자동 시작을 껐습니다. 이번에는 연결을 시작합니다.' }
 }
 
+. SelectOptions
 $kind = GpuKind
 # 이미지 릴리스 전에는 실행 가능한 uv 설치를 사용한다.
 if (-not $Digest['cpu'] -and -not (GetEnv 'UDALLY_IMAGE' '') -and $Force -ne 'docker') {
