@@ -27,6 +27,21 @@ from types import SimpleNamespace
 import numpy
 
 
+# Windows pip CUDA 휠의 DLL은 시스템 PATH에 자동으로 등록되지 않는다.
+# 핸들을 보관해야 add_dll_directory의 등록이 프로세스 동안 유지된다.
+_CUDA_DLL_HANDLES = []
+if sys.platform == "win32":
+    import sysconfig
+
+    cuda_root = Path(sysconfig.get_path("purelib")) / "nvidia"
+    cuda_bins = [p for name in ("cublas", "cudnn", "cuda_nvrtc")
+                 if (p := cuda_root / name / "bin").is_dir()]
+    for cuda_bin in cuda_bins:
+        _CUDA_DLL_HANDLES.append(os.add_dll_directory(str(cuda_bin)))
+    if cuda_bins:
+        os.environ["PATH"] = os.pathsep.join(map(str, cuda_bins)) + os.pathsep + os.environ.get("PATH", "")
+
+
 def env(name: str, default=None):
     """환경변수. LINK_* 이름이 우선이고, 없으면 udally-stt 시절 이름(STT_*, LINK_FILE은 STT_LINK_FILE)을 읽는다."""
     v = os.environ.get(name)

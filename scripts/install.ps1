@@ -6,8 +6,11 @@
 $ErrorActionPreference = 'Stop'
 # docker·uv가 내는 UTF-8 출력을 한국어 Windows 콘솔(CP949)에서도 깨지지 않게 읽는다. 끝나면 되돌린다.
 $prevEnc = [Console]::OutputEncoding
+$prevPythonIoEncoding = [Environment]::GetEnvironmentVariable('PYTHONIOENCODING', 'Process')
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 try {
+# Run이 Python stdout을 파이프로 받으므로 CP949 대신 읽는 쪽과 같은 UTF-8을 쓴다.
+$env:PYTHONIOENCODING = 'utf-8'
 Set-StrictMode -Version 2
 
 # ---------- 릴리스 값(.github/workflows/release.yml이 채운다) ----------
@@ -187,5 +190,12 @@ else {
   if ($Force -ne 'uv') { Say 'uv로 설치합니다(Docker 없음 또는 AMD GPU).' }
   UvInstall $kind
 }
-} finally { [Console]::OutputEncoding = $prevEnc }
+} finally {
+  [Console]::OutputEncoding = $prevEnc
+  if ($null -eq $prevPythonIoEncoding) {
+    Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue
+  } else {
+    [Environment]::SetEnvironmentVariable('PYTHONIOENCODING', $prevPythonIoEncoding, 'Process')
+  }
+}
 }
