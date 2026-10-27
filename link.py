@@ -7,6 +7,8 @@ udally-link unlink                    스스로 끊기(DELETE /self) + 토큰 �
 """
 
 import contextlib
+import http.client
+import socket
 import ipaddress
 import json
 import logging
@@ -480,27 +482,71 @@ class AiFail(Exception):
         self.code = code
 
 
-def ai_post(endpoint: str, body: dict, api_key: str, timeout: float) -> dict:
-    req = urllib.request.Request(endpoint, method="POST", data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json", "User-Agent": f"udally-link/{server.VERSION}",
-                                          **({"Authorization": f"Bearer {api_key}"} if api_key else {})})
+def ai_post(endpoint: str, body: dict, api_key: str, timeout: float, cancel=None) -> dict:
+    if cancel and cancel.is_set():
+        raise AiFail("cancelled")
+    parts = urllib.parse.urlsplit(endpoint)
+    cls = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+    conn = cls(parts.hostname, parts.port, timeout=timeout)
+    headers = {"Content-Type": "application/json", "User-Agent": f"udally-link/{server.VERSION}",
+               **({"Authorization": f"Bearer {api_key}"} if api_key else {})}
+    done, stopped = threading.Event(), threading.Event()
+    sockets, results, errors = [], [], []
+    deadline = time.monotonic() + timeout
+
+    def disconnect():
+        for sock in [conn.sock, *sockets]:
+            with contextlib.suppress(OSError, AttributeError):
+                sock.shutdown(socket.SHUT_RDWR)
+            with contextlib.suppress(OSError, AttributeError):
+                sock.close()
+
+    def request():
+        try:
+            conn.connect()
+            sockets.append(conn.sock)
+            if stopped.is_set():
+                return
+            conn.request("POST", parts.path or "/", body=json.dumps(body).encode(), headers=headers)
+            response = conn.getresponse()
+            if response.status != 200:
+                code = AI_ERRORS.get(response.status) or ("blocked_address" if response.status < 400 else "http_5xx" if response.status >= 500 else "http_4xx")
+                raise AiFail(code)
+            data = response.read(AI_MAX_BYTES + 1)
+            if len(data) > AI_MAX_BYTES:
+                raise AiFail("too_large")
+            try:
+                results.append(json.loads(data))
+            except ValueError:
+                raise AiFail("bad_output") from None
+        except AiFail as error:
+            errors.append(error)
+        except (TimeoutError, OSError, http.client.HTTPException) as error:
+            errors.append(AiFail("timeout" if isinstance(error, TimeoutError) else "connect_failed"))
+        except Exception:
+            errors.append(AiFail("connect_failed"))
+        finally:
+            conn.close()
+            done.set()
+
+    threading.Thread(target=request, daemon=True).start()
     try:
-        with _ai_opener.open(req, timeout=timeout) as r:
-            data = r.read(AI_MAX_BYTES + 1)
-    except urllib.error.HTTPError as e:
-        code = AI_ERRORS.get(e.code) or ("blocked_address" if e.code < 400 else "http_5xx" if e.code >= 500 else "http_4xx")
-        raise AiFail(code) from None
-    except TimeoutError:
-        raise AiFail("timeout") from None
-    except (urllib.error.URLError, OSError) as e:
-        timed_out = isinstance(getattr(e, "reason", None), TimeoutError)
-        raise AiFail("timeout" if timed_out else "connect_failed") from None
-    if len(data) > AI_MAX_BYTES:
-        raise AiFail("too_large")
-    try:
-        return json.loads(data)
-    except ValueError:
-        raise AiFail("bad_output") from None
+        while True:
+            if cancel and cancel.is_set():
+                raise AiFail("cancelled")
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise AiFail("timeout")
+            if done.wait(min(0.2, left)):
+                if cancel and cancel.is_set():
+                    raise AiFail("cancelled")
+                if errors:
+                    raise errors[0]
+                return results[0]
+    finally:
+        if not done.is_set():
+            stopped.set()
+            threading.Thread(target=disconnect, daemon=True).start()
 
 
 # ---------- Codex(내 구독): PC의 Codex CLI를 비대화로 실행. 구독 토큰은 읽지도 보내지도 않는다 ----------
@@ -840,6 +886,8 @@ class AiJob:
 
     def ask(self) -> tuple[str, dict]:
         j = self.job
+        if self.cancel.is_set():
+            raise AiFail("cancelled")
         if j.get("backend") == "codex":
             return codex_ask(j, self.cancel), {}
         endpoint = ai_endpoint(j.get("url"))
@@ -850,14 +898,16 @@ class AiJob:
                    if j.get(k) is not None}}
         timeout = float(j.get("timeout_s") or 30)
         try:
-            r = ai_post(endpoint, body, j.get("api_key") or "", timeout)
+            r = ai_post(endpoint, body, j.get("api_key") or "", timeout, cancel=self.cancel)
         except AiFail as e:
             if e.code != "http_4xx" or not ({"response_format", "reasoning_effort"} & body.keys()):
                 raise
+            if self.cancel.is_set():
+                raise AiFail("cancelled")
             # json_object·reasoning_effort를 모르는 서버: 한 번만 둘 다 빼고 다시(§11.2)
             body.pop("response_format", None)
             body.pop("reasoning_effort", None)
-            r = ai_post(endpoint, body, j.get("api_key") or "", timeout)
+            r = ai_post(endpoint, body, j.get("api_key") or "", timeout, cancel=self.cancel)
         try:
             content = r["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError):
@@ -884,7 +934,7 @@ class AiJob:
                 sleep(backoff(n))
 
     def go(self, sleep=time.sleep) -> str:
-        # ponytail: 진행 중인 HTTP 호출은 끊지 않는다(urllib) — 취소는 응답이 오거나 timeout_s가 지난 뒤 반영
+        # 취소 이벤트는 HTTP 소켓과 Codex 프로세스에도 전달한다.
         try:
             content, usage = self.ask()
             body = {"status": "done", "content": content, "usage": usage}
