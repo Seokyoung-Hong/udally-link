@@ -105,7 +105,7 @@ $Options = @{
   LINK_GPUS = GetEnv 'LINK_GPUS' ''
   LINK_CPU_FALLBACK = GetEnv 'LINK_CPU_FALLBACK' '0'
   LINK_NAME = GetEnv 'LINK_NAME' ''
-  LINK_PROFILE = GetEnv 'LINK_PROFILE' 'accuracy'
+  LINK_PROFILE = GetEnv 'LINK_PROFILE' 'balanced'
 }
 function SelectOptions {
   $mode = GetEnv 'UDALLY_INSTALL_MODE' ''
@@ -124,7 +124,7 @@ function SelectOptions {
     $fallbackName = if ($Options.LINK_CPU_FALLBACK -eq '1') { 'CPU로 전환' } else { '중단' }
     $startName = if ($AutoStart) { '켜기' } else { '끄기' }
     $pcName = if ($Options.LINK_NAME) { $Options.LINK_NAME } else { '컴퓨터 이름' }
-    $profileName = switch ($Options.LINK_PROFILE) { 'balanced' { '균형' } 'throughput' { '처리량 우선' } default { '정확성 우선 (권장)' } }
+    $profileName = switch ($Options.LINK_PROFILE) { 'accuracy' { '정확성 우선' } 'throughput' { '처리량 우선' } default { '균형 (권장)' } }
     $focus = Choose '세부 설정 · 항목을 선택해 변경하세요.' @(
       "설치 방식     : $methodName", "처리 장치     : $deviceName", "사용할 GPU    : $gpuName",
       "GPU 오류 시   : $fallbackName", "자동 시작     : $startName", "PC 이름       : $pcName", "전사 우선순위 : $profileName", '설치 시작', '취소'
@@ -164,7 +164,7 @@ function SelectOptions {
       4 { $Options.LINK_CPU_FALLBACK = if ((Choose 'GPU 오류 시' @('중단 (권장)', 'CPU로 전환')) -eq 1) { '0' } else { '1' } }
       5 { $AutoStart = (Choose '로그인할 때 자동 시작' @('켜기', '끄기')) -eq 1 }
       6 { $Options.LINK_NAME = [string](Read-Host 'PC 이름 (Enter: 컴퓨터 이름)') }
-      7 { $choice = Choose '전사 우선순위' @('정확성 우선 (권장)', '균형 (의심 구간 재확인)', '처리량 우선'); $Options.LINK_PROFILE = @('accuracy', 'balanced', 'throughput')[$choice - 1] }
+      7 { $choice = Choose '전사 우선순위' @('균형 (권장, 의심 구간 재확인)', '정확성 우선 (순차, 느림)', '처리량 우선'); $Options.LINK_PROFILE = @('balanced', 'accuracy', 'throughput')[$choice - 1] }
       8 { break }
       9 { throw [OperationCanceledException]::new('설치를 취소했습니다.') }
     }

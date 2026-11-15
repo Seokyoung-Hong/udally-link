@@ -116,10 +116,10 @@ LINK_API_KEY=... LINK_HOST=0.0.0.0 LINK_PORT=8000 uv run server.py
 | `LINK_GPUS` | 전부 | 쓸 GPU 번호(nvidia-smi·HIP·OpenVINO `GPU.n` 번호). 예 `0,1`. `CUDA_VISIBLE_DEVICES`와 함께 쓰지 마세요(번호가 어긋납니다). |
 | `LINK_CPU_FALLBACK` | `0` | GPU 오류 시 기본적으로 중단합니다. `1`로 명시한 경우에만 CPU 전환을 허용합니다. GPU가 처음부터 없는 자동 감지 환경은 CPU를 사용합니다. |
 | `LINK_COMPUTE_TYPE` | 자동 | 정하면 정밀도를 고정합니다(자동 강등 안 함). |
-| `LINK_PROFILE` | `accuracy` | 정확성 우선: 기존 순차 추론·beam 5, 강제 n-gram 억제 없음. CUDA float16을 자동 양자화하지 않습니다. CPU는 RAM이 충분하면 float32, 부족하면 int8과 안내를 사용합니다. 선택한 모델은 바꾸지 않습니다. |
+| `LINK_PROFILE` | `balanced` | `balanced`(기본): 배치 전사 + 누락·반복 의심 구간만 순차 재확인(NoteMaker 11-14 실측상 순차와 같은 내용, 더 빠름). `throughput`: 재확인 없이 배치만. `accuracy`: 전부 순차 추론(느림). 모든 모드 beam 5, 반복 억제 켬(끄면 같은 말 반복 환각이 재발). 아래는 `accuracy`에만 해당합니다: CUDA float16을 자동 양자화하지 않습니다. CPU는 RAM이 충분하면 float32, 부족하면 int8과 안내를 사용합니다. 선택한 모델은 바꾸지 않습니다. |
 | `LINK_CONCURRENCY` | 장비별 자동 | GPU 환경은 `max(3, GPU 수)`의 전처리 대기열, CPU 전용은 허용 코어 수로 1~3 요청을 고릅니다. CUDA 모델은 GPU당 1워커이며 웹에는 실제 실행 슬롯 수를 보고합니다. |
-| `LINK_BATCH_SIZE` | `auto` | 정확성 우선 모드에서는 항상 0(순차). `balanced`/`throughput`에서 모델 크기·남은 VRAM·안전 여유로 1/2/4/8 상한을 선택합니다. `0`은 순차, `1`~`32`는 지정 상한이며 메모리 상황에 따라 줄어듭니다. |
-| `LINK_QUALITY_GUARD` | 균형 모드 `1` | 배치 결과가 음성 길이에 비해 지나치게 짧거나 용어 나열이면 같은 GPU에서 순차 재확인합니다. 모든 누락·환각을 찾는 정확도 검증기는 아닙니다. |
+| `LINK_BATCH_SIZE` | `auto` | 정확성 우선 모드에서는 항상 0(순차). `balanced`/`throughput`에서 모델 크기·남은 VRAM·안전 여유로 1/2/4/8 상한을 선택합니다(8GB 이하 2, 그 위 8). 배치는 타임스탬프를 켜고 돌려 30초 창 안 문장 누락(faster-whisper #1179)을 막습니다. 이때 16 이상은 오히려 느려지므로(12GB 카드 2.7배) 8을 넘기지 않는 것을 권합니다. `0`은 순차, `1`~`32`는 지정 상한이며 메모리 상황에 따라 줄어듭니다. |
+| `LINK_QUALITY_GUARD` | 균형 모드 `1` | 배치 결과를 구간마다 검사합니다. 말소리 대비 글자가 초당 2자 미만이거나 용어만 나열했으면 누락, 압축률이 2.4를 넘거나(같은 꼴 반복) 초당 15자를 넘으면 반복 환각으로 봅니다. 걸린 구간은 같은 GPU에서 순차 전사(`initial_prompt` 없이 용어는 hotwords로)로 다시 받고, 나아졌을 때만 바꿉니다. 그래도 남은 반복 환각은 지우지 않고 결과 행에 `loop: true`를 실어 보내며, 유달리 화면이 그 줄에 "반복 의심" 표시를 그립니다(글에는 넣지 않음, 모든 모드에 적용). 말소리 5초 미만 구간의 누락이나 잘못 알아들은 단어는 잡지 못합니다. |
 | `LINK_CPU_THREADS` | 장비별 자동 | CPU 전용은 워커 수로 코어를 나누고, CUDA 모델 전처리는 GPU 수를 고려해 최대 4스레드를 씁니다. 프로세스 affinity·cgroup v1/v2 CPU 제한을 반영합니다. |
 | `LINK_HOST` / `LINK_PORT` | `127.0.0.1` / `8000` | uv 실행 때 여는 주소. Docker는 `LINK_BIND` / `LINK_PORT`(호스트 쪽)를 씁니다. |
 | `UDALLY_URL` | `https://udally.quanect.kr` | 연결 모드가 부를 유달리 주소 |

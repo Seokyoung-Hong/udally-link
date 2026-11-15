@@ -32,6 +32,7 @@ from pathlib import Path
 import numpy
 
 import server
+from whisper_runtime import is_loop
 
 env = server.env
 URL = (env("UDALLY_URL") or "https://udally.quanect.kr").rstrip("/")
@@ -253,6 +254,11 @@ def speech(chunks, vad=None):
 
 
 # ---------- 작업 ----------
+def text_fields(text: str) -> dict:
+    """행 글자 + 반복 환각 의심 플래그. 표시는 유달리 화면이 그린다(전사문 글에는 넣지 않는다)."""
+    return {"text": text, "loop": True} if is_loop(text) else {"text": text}
+
+
 def groups(items, max_seconds=240, max_rows=32):
     """준비된 구간을 제한된 크기로 묶는다. 화자·구간 메타데이터는 그대로 둔다."""
     group, seconds = [], 0.0
@@ -334,7 +340,7 @@ class Job:
         try:
             text = "" if self.cancel.is_set() or not len(a) else \
                 self.run(self.job["model"], a, self.job.get("language") or "ko", self.job.get("glossary") or None, self.cancel)
-            row["text"] = text
+            row.update(text_fields(text))
         except Exception as e:  # 메모리 부족(503) 등: 이 구간만 실패로 남기고 다음 구간으로
             log.warning("구간 %s 전사 실패: %s", seq, getattr(e, "detail", e))
             row["failed"] = True
@@ -363,7 +369,7 @@ class Job:
             return
         with self.lock:
             for (seq, uid, g, _), text in zip(items, texts):
-                self.rows.append({"seq": seq, "user_id": uid, **g, "text": text})
+                self.rows.append({"seq": seq, "user_id": uid, **g, **text_fields(text)})
                 self.p["segments_done"] += 1
                 self.p["done_ms"] += g["duration_ms"]
 

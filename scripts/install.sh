@@ -87,7 +87,7 @@ LINK_DEVICE=${LINK_DEVICE:-auto}
 LINK_GPUS=${LINK_GPUS:-}
 LINK_CPU_FALLBACK=${LINK_CPU_FALLBACK:-0}
 LINK_NAME=${LINK_NAME:-}
-LINK_PROFILE=${LINK_PROFILE:-accuracy}
+LINK_PROFILE=${LINK_PROFILE:-balanced}
 select_options() {
   mode=${UDALLY_INSTALL_MODE:-}
   case "$mode" in ''|auto|advanced) ;; *) fail 'UDALLY_INSTALL_MODE: auto 또는 advanced' ;; esac
@@ -99,7 +99,7 @@ select_options() {
       case "$selected_mode" in 1) mode=auto ;; 2) mode=advanced ;; esac
     fi
   fi
-  if [ "$mode" = auto ]; then say '자동 설치: 정확성 우선 · 장치 자동 감지 · GPU 오류 시 중단 · 자동 시작'; return; fi
+  if [ "$mode" = auto ]; then say '자동 설치: 균형 ·장치 자동 감지 · GPU 오류 시 중단 · 자동 시작'; return; fi
   exec 3</dev/tty
   focus=1
   while :; do
@@ -107,7 +107,7 @@ select_options() {
     case "$LINK_DEVICE" in cpu) device_name=CPU ;; auto) device_name='자동 감지 (GPU 우선)' ;; *) device_name=GPU ;; esac
     fallback_name='중단'; [ "$LINK_CPU_FALLBACK" = 0 ] || fallback_name='CPU로 전환'
     start_name='켜기'; [ "$AUTOSTART" = 1 ] || start_name='끄기'
-    case "$LINK_PROFILE" in balanced) profile_name='균형' ;; throughput) profile_name='처리량 우선' ;; *) profile_name='정확성 우선 (권장)' ;; esac
+    case "$LINK_PROFILE" in accuracy) profile_name='정확성 우선' ;; throughput) profile_name='처리량 우선' ;; *) profile_name='균형 (권장)' ;; esac
     focus=$(MENU_DEFAULT=$focus choose '세부 설정 · 항목을 선택해 변경하세요.' \
       "설치 방식 : $method_name" "처리 장치 : $device_name" "사용할 GPU : ${LINK_GPUS:-전체}" \
       "GPU 오류 시 : $fallback_name" "자동 시작 : $start_name" "PC 이름 : ${LINK_NAME:-컴퓨터 이름}" "전사 우선순위 : $profile_name" '설치 시작' '취소') || exit $?
@@ -149,8 +149,8 @@ select_options() {
         printf 'PC 이름 (Enter: 컴퓨터 이름): ' >&2
         IFS= read -r LINK_NAME <&3 || fail '입력이 종료되었습니다.' ;;
       7)
-        answer=$(choose '전사 우선순위' '정확성 우선 (권장)' '균형 (의심 구간 재확인)' '처리량 우선') || exit $?
-        case "$answer" in 1) LINK_PROFILE=accuracy ;; 2) LINK_PROFILE=balanced ;; 3) LINK_PROFILE=throughput ;; esac ;;
+        answer=$(choose '전사 우선순위' '균형 (권장, 의심 구간 재확인)' '정확성 우선 (순차, 느림)' '처리량 우선') || exit $?
+        case "$answer" in 1) LINK_PROFILE=balanced ;; 2) LINK_PROFILE=accuracy ;; 3) LINK_PROFILE=throughput ;; esac ;;
       8) break ;;
       9) fail '설치를 취소했습니다.' ;;
     esac

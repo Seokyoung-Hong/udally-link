@@ -16,25 +16,30 @@ from whisper_runtime import CudaWhisper, batch_limit, choose_batch, wrap
 
 
 class BatchTests(unittest.TestCase):
-    def test_default_accuracy_profile_is_sequential_and_has_no_ngram_suppression(self):
+    def test_default_is_balanced_batch_and_accuracy_is_sequential_with_repeat_suppression(self):
         with tempfile.TemporaryDirectory() as folder:
             (Path(folder) / "model.bin").write_bytes(b"test")
+            gpu = {"index": 0, "total_mb": 16000, "free_mb": 12000}
+            default = wrap(Mock(), folder, gpu, "float16", lambda key, default=None: default)
+            self.assertEqual(default.profile, "balanced")
+            self.assertEqual(default.batch_size, 8)
+            self.assertTrue(default.quality_guard)
             model = Mock()
             wrapped = wrap(
                 model,
                 folder,
-                {"index": 0, "total_mb": 16000, "free_mb": 12000},
+                gpu,
                 "float16",
-                lambda key, default=None: default,
+                lambda key, default=None: "accuracy" if key == "LINK_PROFILE" else default,
             )
             self.assertEqual(wrapped.profile, "accuracy")
             self.assertEqual(wrapped.batch_size, 0)
             wrapped.transcribe(numpy.zeros(16000), "ko", "용어")
             self.assertEqual(
-                model.transcribe.call_args.kwargs["no_repeat_ngram_size"], 0
+                model.transcribe.call_args.kwargs["no_repeat_ngram_size"], 4
             )
             self.assertEqual(
-                model.transcribe.call_args.kwargs["repetition_penalty"], 1.0
+                model.transcribe.call_args.kwargs["repetition_penalty"], 1.1
             )
 
     def test_cpu_thread_budget_and_container_limits(self):
@@ -129,6 +134,9 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(
             choose_batch(2950, {"total_mb": 12288, "free_mb": 7428}, "float16"), 4
         )
+        self.assertEqual(
+            choose_batch(2950, {"total_mb": 12288, "free_mb": 11000}, "float16"), 8
+        )
         self.assertLessEqual(
             choose_batch(2950, {"total_mb": 8192, "free_mb": 7000}, "float16"), 2
         )
@@ -154,6 +162,7 @@ class BatchTests(unittest.TestCase):
 
         def infer(data, **kwargs):
             self.assertIsNone(kwargs["initial_prompt"])
+            self.assertFalse(kwargs["without_timestamps"])  # 배치 누락 방지
             self.assertEqual(len(kwargs["hotwords"]), 220)
             clips = kwargs["clip_timestamps"]
             self.assertEqual(
@@ -237,8 +246,48 @@ class BatchTests(unittest.TestCase):
                 ["설명 문장이 실제로 이어집니다."],
             )
         self.assertIs(model.transcribe.call_args.args[0], audio)
+        self.assertIsNone(model.transcribe.call_args.kwargs["initial_prompt"])
+        self.assertEqual(model.transcribe.call_args.kwargs["hotwords"], "R-Type, S-Type")
         self.assertEqual(wrapper.quality_retries, 1)
-        self.assertFalse(wrapper.needs_review("R-Type", 0, "R-Type"))
+        self.assertIsNone(wrapper.issue("R-Type", 0, "R-Type"))
+
+    def test_gap_and_loop_judgement_matches_notemaker_report(self):
+        wrapper = CudaWhisper(Mock(), 8)
+        normal = "".join(chr(0xAC00 + i * 37 % 11172) for i in range(150))
+        count = ", ".join(f"WORD {i}" for i in range(60))
+        self.assertIsNone(wrapper.issue(normal, 30, None))  # 5자/초
+        self.assertEqual(wrapper.issue("짧음", 30, None), "drop")
+        self.assertEqual(wrapper.issue("가나" * 300, 30, None), "loop")  # 압축률
+        self.assertEqual(wrapper.issue(count, 30, None), "loop")
+        self.assertEqual(wrapper.issue(normal * 4, 30, None), "loop")  # 20자/초
+        # 남은 반복은 글에 표시하지 않고 행 플래그로만 보낸다(화면이 그린다).
+        self.assertEqual(link.text_fields(count), {"text": count, "loop": True})
+        self.assertEqual(link.text_fields(normal), {"text": normal})
+
+    def test_refill_replaces_only_when_better(self):
+        audio = numpy.zeros(30 * 16000)
+        model = Mock(frames_per_second=50)
+        wrapper = CudaWhisper(model, 8)
+        count = ", ".join(f"WORD {i}" for i in range(60))
+        cases = [
+            ("짧음", "짧", "짧음"),  # 누락인데 글자가 줄면 그대로
+            ("짧음", "조금 더 긴 문장", "조금 더 긴 문장"),  # 누락 구간에서 글자가 늘면 교체
+            (count, count + " 더", count),  # 반복이 그대로면 그대로(표시는 행 loop 플래그)
+        ]
+        for old, new, expected in cases:
+            model.transcribe.return_value = (iter([SimpleNamespace(text=new)]), None)
+            with (
+                patch(
+                    "faster_whisper.vad.get_speech_timestamps",
+                    return_value=[{"start": 0, "end": len(audio)}],
+                ),
+                patch.object(
+                    wrapper,
+                    "_batched",
+                    return_value=(iter([SimpleNamespace(seek=0, text=old)]), None),
+                ),
+            ):
+                self.assertEqual(wrapper.transcribe_many([audio], "ko"), [expected])
 
     def test_long_speech_is_split_without_truncating_after_30_seconds(self):
         wrapper = CudaWhisper(Mock(frames_per_second=50), 4, quality_guard=False)

@@ -3,6 +3,7 @@
 import bisect
 import logging
 import re
+import zlib
 from pathlib import Path
 
 import numpy
@@ -12,7 +13,7 @@ SR = 16000
 
 
 def profile(env):
-    value = env("LINK_PROFILE", "accuracy") or "accuracy"
+    value = env("LINK_PROFILE", "balanced") or "balanced"
     if value not in ("accuracy", "balanced", "throughput"):
         raise ValueError(
             "LINK_PROFILE는 accuracy, balanced, throughput 중 하나여야 합니다."
@@ -40,7 +41,8 @@ def choose_batch(weights_mb, gpu, compute_type, maximum=None):
     cap = (
         maximum
         if maximum is not None
-        else (2 if total <= 8192 else 4 if total <= 12288 else 8)
+        # 타임스탬프를 켠 배치는 12·16GB 모두 8이 가장 빠르고 16은 크게 느려진다(NoteMaker 11-14 실측).
+        else (2 if total <= 8192 else 8)
     )
     factor = (
         2
@@ -55,6 +57,20 @@ def choose_batch(weights_mb, gpu, compute_type, maximum=None):
     affordable = max(1, int((free - resident - reserve) / per_item))
     candidates = [b for b in (1, 2, 4, 8, 16, 32) if b <= min(cap, affordable)]
     return max(candidates, default=1)
+
+
+# 누락·반복 판정 기준(NoteMaker 전사_누락_검증과_자동메우기_2026-11-14): 정상 강의 밀도는 하위 1% 2.9,
+# 최대 14.3자/초, 확인된 누락은 0.4~1.9자/초. 정상 줄 압축률은 99.9%가 2.11 이하(2.4 = Whisper 반복 기준).
+# ponytail: 보고서는 15초 미만 구간을 오탐 때문에 건너뛰지만, 여기선 교체가 "나아졌을 때만"이라 5초를 유지한다.
+MIN_SPEECH_S = 5
+RATE_RANGE = (2.0, 15.0)
+LOOP_RATIO = 2.4
+
+
+def is_loop(text):
+    """같은 꼴 반복(반복 환각). 메우기로도 남은 줄은 지우지 않고 행에 loop 플래그로 알린다(link.py)."""
+    data = (text or "").encode()
+    return len(data) >= 60 and len(data) / len(zlib.compress(data)) > LOOP_RATIO
 
 
 def terms(text):
@@ -97,6 +113,8 @@ class CudaWhisper:
                     batch_size=self.batch_size,
                     vad_filter=vad_filter,
                     clip_timestamps=clips,
+                    # 기본값(True)은 30초 창 안의 문장을 통째로 빠뜨린다(faster-whisper #1179).
+                    without_timestamps=False,
                     **self.options,
                 )
                 # generator 내부에서 OOM이 나더라도 부분 결과를 내보내지 않고 같은 입력을 재시도한다.
@@ -129,25 +147,43 @@ class CudaWhisper:
             data, language, initial_prompt, vad_filter=vad_filter
         )
         segments = list(segments)
-        if self.needs_review(
-            "".join(s.text for s in segments),
-            getattr(info, "duration_after_vad", 0),
-            initial_prompt,
-        ):
-            log.warning("배치 출력을 같은 GPU에서 순차 재확인합니다.")
-            self.quality_retries += 1
-            return self.model.transcribe(
-                data,
-                language=language,
-                initial_prompt=initial_prompt,
-                vad_filter=vad_filter,
-                **self.options,
-            )
+        speech = getattr(info, "duration_after_vad", 0)
+        old = "".join(s.text for s in segments)
+        kind = self.issue(old, speech, initial_prompt)
+        if kind:
+            new = list(self._resequence(data, language, initial_prompt, vad_filter)[0])
+            if self.better(kind, old, "".join(s.text for s in new), speech, initial_prompt):
+                segments = new
         return iter(segments), info
 
-    def needs_review(self, text, speech_seconds, prompt):
-        if not self.quality_guard or speech_seconds < 5:
-            return False
+    def _resequence(self, data, language, prompt, vad_filter=True):
+        """의심 구간 메우기: 같은 GPU에서 순차 전사. initial_prompt는 넣지 않는다
+        (짧은 구간에서 프롬프트 문장을 그대로 받아 적었다, NoteMaker 11-14)."""
+        log.warning("배치 출력이 의심스러워 같은 GPU에서 순차 재확인합니다.")
+        self.quality_retries += 1
+        return self.model.transcribe(
+            data,
+            language=language,
+            hotwords=terms(prompt),
+            initial_prompt=None,
+            vad_filter=vad_filter,
+            **self.options,
+        )
+
+    def better(self, kind, old, new, speech_seconds, prompt):
+        """나아졌을 때만 바꾼다: 새 결과가 정상이거나, 누락 구간에서 글자가 늘었을 때."""
+        return self.issue(new, speech_seconds, prompt, guard=False) is None or (
+            kind == "drop" and len(new.strip()) > len(old.strip())
+        )
+
+    def issue(self, text, speech_seconds, prompt, *, guard=True):
+        """"drop"(누락)·"loop"(반복 환각)·None. 기준은 NoteMaker 11-14 실측."""
+        if guard and not self.quality_guard:
+            return None
+        if is_loop(text):
+            return "loop"
+        if speech_seconds < MIN_SPEECH_S:
+            return None
 
         def normalize(text):
             return re.sub(r"[\W_]+", "", text.lower())
@@ -158,8 +194,10 @@ class CudaWhisper:
             if normalize(t)
         }
         phrases = [normalize(t) for t in re.split(r"[,，;\n]+", text) if normalize(t)]
-        keywords_only = bool(phrases) and all(t in vocabulary for t in phrases)
-        return len(normalize(text)) < speech_seconds * 2 or keywords_only
+        if bool(phrases) and all(t in vocabulary for t in phrases):
+            return "drop"  # 용어만 나열 = 실제 말이 빠짐
+        rate = len(normalize(text)) / speech_seconds
+        return "drop" if rate < RATE_RANGE[0] else "loop" if rate > RATE_RANGE[1] else None
 
     def transcribe_many(self, audios, language=None, initial_prompt=None, cancel=None):
         """원본 발화 경계는 clip으로 분리한다. 출력의 화자·순서·시각을 합치지 않는다."""
@@ -227,20 +265,12 @@ class CudaWhisper:
         for row, text in enumerate(texts):
             if cancel and cancel.is_set():
                 break
-            if self.needs_review(text, speech_lengths[row], initial_prompt):
-                log.warning(
-                    "배치 출력이 지나치게 짧거나 용어 나열입니다. 원본 발화 %s를 같은 GPU에서 순차 재확인합니다.",
-                    row,
-                )
-                segments, _ = self.model.transcribe(
-                    audios[row],
-                    language=language,
-                    initial_prompt=initial_prompt,
-                    vad_filter=True,
-                    **self.options,
-                )
-                texts[row] = "".join(s.text for s in segments).strip()
-                self.quality_retries += 1
+            kind = self.issue(text, speech_lengths[row], initial_prompt)
+            if kind:
+                segments, _ = self._resequence(audios[row], language, initial_prompt)
+                new = "".join(s.text for s in segments).strip()
+                if self.better(kind, text, new, speech_lengths[row], initial_prompt):
+                    texts[row] = new
         return texts
 
 
@@ -257,11 +287,10 @@ def wrap(model, path, gpu, compute_type, env):
         size,
         gpu.get("free_mb"),
     )
+    # 반복 억제는 모든 모드에서 켠다. 끄면 "R-Type, R-Type, …" 같은 반복 환각이 재발한다.
     result = CudaWhisper(
         model,
         size,
-        no_repeat_ngram_size=0 if mode == "accuracy" else 4,
-        repetition_penalty=1.0 if mode == "accuracy" else 1.1,
         quality_guard=(
             env("LINK_QUALITY_GUARD") or ("0" if mode == "throughput" else "1")
         )
