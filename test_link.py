@@ -534,6 +534,19 @@ assert link.backoff(10) <= 61
 core.heartbeat = lambda b: (200, {"poll_s": 5, "pull": None, "job": None})
 assert a.once() is None and a.fails == 0 and a.wait == 5
 
+# ---------- 알림 영역 아이콘 상태: 닿지 않음 → 연결됨 → 작업 중 ----------
+import tray  # noqa: E402
+
+assert tray.state(a) == "online" and tray.state(dead) == "offline"
+a.job = object()
+assert tray.state(a) == "busy"
+a.job = None
+core.heartbeat = lambda b: (503, {})
+a.once()
+assert tray.state(a) == "offline"
+core.heartbeat = lambda b: (200, {"poll_s": 5, "pull": None, "job": None})
+a.once()
+
 # ---------- 426 → 업데이트 안내 후 4, 401 → 토큰 파일 삭제 후 3 ----------
 core.heartbeat = lambda b: (426, {"detail": "update"})
 assert a.once() == 4 and link.load_link()

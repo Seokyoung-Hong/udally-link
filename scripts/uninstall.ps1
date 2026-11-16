@@ -42,7 +42,12 @@ foreach ($tool in @('udally-link', 'udally-stt')) {  # udally-stt = 옛 이름
   if ($Dry) { Say "[dry-run] remove $lnk, stop $exe" }
   else {
     Remove-Item -Force $lnk -ErrorAction SilentlyContinue
-    Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | Stop-Process -Force
+    # 알림 영역 아이콘은 자식 python이 띄운다 — 트리째 끈다
+    Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | ForEach-Object { & cmd.exe /c "taskkill /PID $($_.Id) /T /F >nul 2>&1" }
+    if ($tool -eq 'udally-link') {  # 시작 메뉴·앱 목록 항목
+      Remove-Item -Force (Join-Path ([Environment]::GetFolderPath('Programs')) '유달리 링크.lnk') -ErrorAction SilentlyContinue
+      Remove-Item -Recurse -Force 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\udally-link' -ErrorAction SilentlyContinue
+    }
   }
   Run $exe @('unlink')
   if (-not $Dry) { [Environment]::SetEnvironmentVariable('UDALLY_URL', $null, 'User') }

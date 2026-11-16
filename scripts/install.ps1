@@ -255,9 +255,9 @@ function UvInstall($kind) {
   }
   $src = GetEnv 'UDALLY_SOURCE' ''
   if (-not $src) { if (-not $Commit) { throw '릴리스 값(커밋)이 비어 있습니다.' }; $src = "git+$Repo@$Commit" }
-  $extra = ''; $with = @()
-  if ($kind -eq 'cuda') { $extra = '[cuda]' }
-  elseif ($kind -eq 'openvino') { $extra = '[openvino]' }
+  $extra = '[tray]'; $with = @()  # tray = 알림 영역 아이콘
+  if ($kind -eq 'cuda') { $extra = '[tray,cuda]' }
+  elseif ($kind -eq 'openvino') { $extra = '[tray,openvino]' }
   elseif ($kind -eq 'rocm') {
     Say 'AMD GPU는 실험 지원입니다. CTranslate2 ROCm 휠과 AMD ROCm 7.2.1 휠을 받습니다(약 1.2GB).'
     $dir = Join-Path $env:LOCALAPPDATA 'udally-link'
@@ -287,7 +287,7 @@ function UvInstall($kind) {
   }
   Say "udally-link $Version ($kind, uv)를 설치합니다."
   # 실행 중이면 Windows가 exe를 잠가 uv가 덮어쓰지 못한다(업데이트 실패). 설치 전에 끈다(자식 python까지).
-  if (-not $Dry) { Get-Process -Name 'udally-link' -ErrorAction SilentlyContinue | ForEach-Object { & taskkill.exe /PID $_.Id /T /F 2>$null | Out-Null } }
+  if (-not $Dry) { Get-Process -Name 'udally-link' -ErrorAction SilentlyContinue | ForEach-Object { & cmd.exe /c "taskkill /PID $($_.Id) /T /F >nul 2>&1" } }
   if ((Run uv (@('tool', 'install', '--force', '--python', '3.12', "udally-link$extra @ $src") + $with)) -ne 0) { throw 'uv 설치에 실패했습니다.' }
   SaveOptions
   $env:UDALLY_URL = $UdallyUrl
@@ -298,18 +298,41 @@ function UvInstall($kind) {
   $lnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'udally-link.lnk'
   $conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
   $logFile = Join-Path $env:LOCALAPPDATA 'udally-link\link.log'
-  $runArgs = "--headless `"$exe`" connect"
-  if ($Dry) { Say "[dry-run] 자동 시작=$AutoStart (log $logFile)" }
+  $runArgs = "--headless `"$exe`" connect --tray"
+  if ($Dry) { Say "[dry-run] 자동 시작=$AutoStart (log $logFile), 시작 메뉴·앱 목록 등록" }
   else {
-    if ($AutoStart) {
-      $s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
-      $s.TargetPath = $conhost; $s.Arguments = $runArgs; $s.WindowStyle = 7; $s.Save()
-    } else { Remove-Item -LiteralPath $lnk -ErrorAction SilentlyContinue }
+    $dir = Join-Path $env:LOCALAPPDATA 'udally-link'
+    $ico = Join-Path $dir 'udally-link.ico'
+    $py = Join-Path (& uv tool dir) 'udally-link\Scripts\python.exe'
+    & $py -c "import sys, tray; tray.image(tray.COLORS['online']).save(sys.argv[1], sizes=[(16, 16), (32, 32), (48, 48)])" $ico
+    function Shortcut($path) {
+      $s = (New-Object -ComObject WScript.Shell).CreateShortcut($path)
+      $s.TargetPath = $conhost; $s.Arguments = $runArgs; $s.WindowStyle = 7; $s.IconLocation = $ico
+      $s.Description = '유달리 링크: 내 PC로 회의 녹음 전사'; $s.Save()
+    }
+    if ($AutoStart) { Shortcut $lnk } else { Remove-Item -LiteralPath $lnk -ErrorAction SilentlyContinue }
+    # 시작 메뉴: 꺼져 있으면 켜고, 켜져 있으면 유달리의 PC 화면을 연다
+    Shortcut (Join-Path ([Environment]::GetFolderPath('Programs')) '유달리 링크.lnk')
+    # 설정 → 앱 목록(사용자 영역, 관리자 권한 불필요). [제거]는 내려받아 둔 uninstall.ps1을 돌린다.
+    $un = Join-Path $dir 'uninstall.ps1'
+    try {  # 못 받아도 설치는 계속(앱 목록 [제거]만 이전 파일 또는 없음)
+      Invoke-WebRequest "$UdallyUrl/link/uninstall.ps1" -OutFile $un -UseBasicParsing
+      # Windows PowerShell 5.1은 BOM 없는 파일을 CP949로 읽는다 — 한글이 깨지지 않게 BOM을 붙인다
+      [IO.File]::WriteAllText($un, [IO.File]::ReadAllText($un, [Text.Encoding]::UTF8), (New-Object Text.UTF8Encoding $true))
+    } catch { Say "제거 스크립트를 받지 못했습니다: $_" }
+    $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\udally-link'
+    New-Item -Path $key -Force | Out-Null
+    @{ DisplayName = '유달리 링크'; DisplayVersion = $Version; Publisher = '유달리'; DisplayIcon = $ico
+       InstallLocation = $dir; URLInfoAbout = "$UdallyUrl/settings/stt"
+       UninstallString = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"& '$un'; Start-Sleep 5`"" }.GetEnumerator() |
+      ForEach-Object { Set-ItemProperty -Path $key -Name $_.Key -Value $_.Value }
+    foreach ($n in 'NoModify', 'NoRepair') { Set-ItemProperty -Path $key -Name $n -Value 1 -Type DWord }
     [Environment]::SetEnvironmentVariable('UDALLY_URL', $UdallyUrl, 'User')
     [Environment]::SetEnvironmentVariable('LINK_LOG_FILE', $logFile, 'User'); $env:LINK_LOG_FILE = $logFile
-    Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | Stop-Process -Force
+    Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | ForEach-Object { & cmd.exe /c "taskkill /PID $($_.Id) /T /F >nul 2>&1" }
     Start-Process $conhost -ArgumentList $runArgs -WindowStyle Hidden
   }
+  Say '작업 표시줄 알림 영역(시계 옆)에 유달리 링크 아이콘이 생겼습니다. 시작 메뉴의 "유달리 링크"로 다시 켤 수 있고, 설정 → 앱에서 제거할 수 있습니다.'
   Say "로그는 $logFile 에 남습니다."
   if ($AutoStart) { Say '로그인할 때 자동으로 켜집니다(시작프로그램).' }
   else { Say '자동 시작을 껐습니다. 이번에는 연결을 시작합니다.' }

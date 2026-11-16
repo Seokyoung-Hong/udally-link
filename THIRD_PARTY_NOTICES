@@ -36,6 +36,7 @@ LGPL 구성요소는 별도 공유 라이브러리(.so)로 들어 있어 사용�
 - [nemotron, 로컬 빌드 전용] libsndfile (soundfile 휠 동봉, _soundfile_data/) — LGPL-2.1-or-later.
   소스: https://github.com/libsndfile/libsndfile/releases (soundfile 버전에 맞는 릴리스, PACKAGES.txt 참고)
 - [nemotron, 로컬 빌드 전용] libsoxr (python-soxr 휠, 정적 포함) — LGPL-2.1-or-later.
+- [Windows uv 설치 전용, 알림 영역 아이콘] pystray — LGPL-3.0. 이미지에 넣지 않고, 설치 때 PyPI 원본 그대로 받아 별도 모듈로 import합니다(사용자가 다른 빌드로 바꿀 수 있음).
   소스: https://github.com/dofuuz/python-soxr (해당 버전 태그, libsoxr 하위 모듈 포함)
 
 

@@ -24,7 +24,7 @@
 - 무인 설치는 `UDALLY_INSTALL_MODE=auto`로 지정합니다. 터미널이 없는 환경과 dry-run은 자동 설치로 진행합니다. 관리자 권한(sudo·UAC)을 요구하지 않고 토큰을 출력하지 않습니다.
 - 화면에 나온 주소(`https://udally.quanect.kr/link`)를 직접 열고 **PC 화면의 코드를 손으로 입력**한 뒤 [허용]합니다. 코드가 든 링크를 남에게 받았다면 누르지 마세요.
 - **Docker가 있으면** GHCR 이미지(digest 고정)를 받아 `udally-link` 컨테이너(`--restart unless-stopped`, 볼륨 `udally-link:/cache`)로 띄웁니다. 토큰은 볼륨에 남으므로 다시 실행 = 업데이트이고 다시 연결하지 않습니다.
-- **Docker가 없으면(또는 AMD GPU면)** [uv](https://docs.astral.sh/uv/)(버전 고정)로 사용자 영역에 설치하고 로그인 때 자동으로 켭니다(Windows 시작프로그램(창 없이 `conhost --headless`, 로그는 `%LOCALAPPDATA%Dally-linkink.log`), Linux `systemd --user`, macOS LaunchAgent).
+- **Docker가 없으면(또는 AMD GPU면)** [uv](https://docs.astral.sh/uv/)(버전 고정)로 사용자 영역에 설치하고 로그인 때 자동으로 켭니다(Windows: 시작프로그램으로 창 없이 `conhost --headless` 실행, 작업 표시줄 알림 영역 아이콘(연결됨·작업 중·닿지 않음, 메뉴: 유달리에서 이 PC 보기·로그 보기·끝내기), 시작 메뉴 "유달리 링크", 설정 → 앱 목록에서 제거, 로그는 `%LOCALAPPDATA%\udally-link\link.log`), Linux `systemd --user`, macOS LaunchAgent).
 - GPU 판별: NVIDIA > AMD > Intel > CPU(Windows `Win32_VideoController` VEN_10DE/1002/8086, Linux `nvidia-smi`·`/dev/kfd`·`/sys/class/drm/*/device/vendor`). GPU가 없으면 CPU를 사용합니다. 감지한 GPU의 실행 오류는 기본적으로 중단하며, CPU 전환은 세부 설정에서 허용할 수 있습니다.
 
 | GPU | Docker | uv |

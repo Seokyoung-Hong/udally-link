@@ -23,6 +23,9 @@ openvino = ["openvino-genai>=2026.4,<2027"]
 # NVIDIA Nemotron(Docker 전용). torch는 cu128 색인에서 먼저 넣는다(PyPI 기본 torch는 cu130).
 nemotron = ["torch==2.11.0", "transformers>=5.13", "librosa"]
 
+# Windows 알림 영역 아이콘(connect --tray). pystray LGPL-3.0(동적 import, 교체 가능) · Pillow MIT-CMU
+tray = ["pystray>=0.19; sys_platform == 'win32'", "Pillow>=10.1; sys_platform == 'win32'"]
+
 [project.scripts]
 udally-link = "server:cli"
 
@@ -31,4 +34,4 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["server", "link", "backends", "whisper_runtime"]
+py-modules = ["server", "link", "backends", "whisper_runtime", "tray"]

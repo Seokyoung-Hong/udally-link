@@ -963,6 +963,7 @@ class Agent:
         self.ai: AiJob | None = None
         self.codex_login: CodexLogin | None = None
         self.fails, self.wait = 0, 5.0
+        self.online = False  # 마지막 heartbeat가 200이었나(알림 영역 아이콘이 본다)
 
     def beat(self) -> dict:
         return {"version": server.VERSION, "job_id": self.job.job["id"] if self.job else None,
@@ -1020,11 +1021,13 @@ class Agent:
         try:
             st, r = call("POST", "/heartbeat", self.beat(), token=self.link["token"], url=self.link.get("url"))
         except Offline as e:
+            self.online = False
             self.fails += 1
             self.wait = backoff(self.fails)
             log.warning("유달리에 닿지 않습니다(%s). %.0f초 뒤 다시 시도합니다.", e, self.wait)
             return None
         self.fails, self.wait = 0, float(r.get("poll_s", 5)) if st == 200 else 5.0
+        self.online = st == 200
         if st == 200:
             if env("LINK_ALIVE_FILE"):  # Docker HEALTHCHECK가 본다
                 Path(env("LINK_ALIVE_FILE")).touch()
@@ -1081,6 +1084,14 @@ def main(argv: list[str]) -> int:
         say("already_linked")
     if "--until-linked" in argv:
         return 0
+    if "--tray" in argv and os.name == "nt":
+        import tray
+
+        if tray.already_running():  # 두 번째 실행(시작 메뉴 클릭)은 유달리 화면만 연다
+            return tray.open_page(link)
+        server.start()
+        log.info("유달리 %s에 연결됨(서버 %s, 알림 영역)", link["url"], link["server_id"])
+        return tray.run(link, Agent(link))
     server.start()
     log.info("유달리 %s에 연결됨(서버 %s)", link["url"], link["server_id"])
     return Agent(link).loop()
