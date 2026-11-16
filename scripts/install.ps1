@@ -15,7 +15,7 @@ Set-StrictMode -Version 2
 
 # ---------- 릴리스 값(.github/workflows/release.yml이 채운다) ----------
 $Version = '0.1.0'
-$Commit = '8c3fcd27f27be11c88dc89810c9290e980e4856c'
+$Commit = '869b39033c44d7f4f5c4b9edd87d3412cedb9ff8'
 $Image = 'ghcr.io/seokyoung-hong/udally-link'
 $Repo = 'https://github.com/Seokyoung-Hong/udally-link'
 $Digest = @{ cpu = ''; cuda = ''; openvino = '' }
