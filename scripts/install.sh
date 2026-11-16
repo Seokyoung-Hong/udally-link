@@ -7,7 +7,7 @@ set -eu
 
 # ---------- 릴리스 값(.github/workflows/release.yml이 채운다) ----------
 VERSION="0.1.0"
-COMMIT="861f6ade8605171496665f68910bc41cd11ce9d8"
+COMMIT="8c3fcd27f27be11c88dc89810c9290e980e4856c"
 IMAGE="ghcr.io/seokyoung-hong/udally-link"
 REPO="https://github.com/Seokyoung-Hong/udally-link"
 DIGEST_CPU=""
