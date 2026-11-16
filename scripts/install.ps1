@@ -244,8 +244,41 @@ function DockerInstall($kind) {
   throw '15분 안에 연결되지 않았습니다. 다시 실행해 주세요.'
 }
 
+# ---------- uv로 설치할 때 Docker로 깔린 이전 버전 정리 ----------
+# 두 벌이 함께 돌면 유달리에 PC가 둘로 보이고 작업을 나눠 받는다. 컨테이너의 연결 토큰은 uv 쪽에 연결이 없을 때만
+# 옮겨 써서(같은 PC 항목·모델 설정 유지) 다시 연결하지 않게 한다. 받은 모델(볼륨)은 남긴다.
+function RemoveDockerInstall {
+  if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return }
+  if (-not (Quiet docker @('info'))) { Say 'Docker가 꺼져 있어 Docker로 설치한 이전 버전이 있는지 확인하지 못했습니다. 있다면 Docker를 켠 뒤 이 명령을 다시 실행해 주세요.'; return }
+  $linkFile = Join-Path $env:APPDATA 'udally-link\link.json'
+  foreach ($n in @($Name, $LegacyName) | Select-Object -Unique) {
+    if (-not (Quiet docker @('inspect', $n))) { continue }
+    Say "Docker로 설치한 이전 버전(컨테이너 $n)을 지우고 uv 설치로 바꿉니다."
+    if ($Dry) { Say "[dry-run] docker cp/rm $n"; continue }
+    $tmp = Join-Path $env:TEMP "udally-link-$n.json"
+    $moved = $false
+    if (-not (Test-Path $linkFile)) {
+      foreach ($f in '/cache/udally-link.json', '/cache/udally-stt.json') {
+        if (Quiet docker @('cp', "${n}:$f", $tmp)) {
+          New-Item -ItemType Directory -Force (Split-Path $linkFile) | Out-Null
+          Move-Item -Force $tmp $linkFile; $moved = $true; break
+        }
+      }
+    }
+    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    $img = docker inspect -f '{{.Config.Image}}' $n 2>$null
+    $vol = docker inspect -f '{{range .Mounts}}{{if eq .Destination "/cache"}}{{.Name}}{{end}}{{end}}' $n 2>$null
+    $ErrorActionPreference = $old
+    Quiet docker @('rm', '-f', $n) | Out-Null
+    # 토큰을 옮기지 않았으면 컨테이너 쪽 연결을 유달리에서 끊는다(남은 PC 항목이 꺼진 채 보이지 않게)
+    if (-not $moved -and $img -and $vol) { Quiet docker @('run', '--rm', '-v', "${vol}:/cache", $img, 'unlink') | Out-Null }
+    if ($vol) { Say "받은 모델은 Docker 볼륨 $vol 에 남아 있습니다. 필요 없으면: docker volume rm $vol" }
+  }
+}
+
 # ---------- uv 경로 ----------
 function UvInstall($kind) {
+  RemoveDockerInstall
   $bin = Join-Path $HOME '.local\bin'
   $env:Path = "$bin;$env:Path"
   if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
@@ -276,6 +309,8 @@ function UvInstall($kind) {
     foreach ($w in $RocmWheels) { $with += @('--with', $w) }
   }
   $legacyExe = Join-Path $bin "$LegacyName.exe"
+  # 프로그램은 지워졌는데 옛 시작프로그램 바로가기만 남은 경우도 지운다
+  if (-not $Dry) { Remove-Item -Force (Join-Path ([Environment]::GetFolderPath('Startup')) "$LegacyName.lnk") -ErrorAction SilentlyContinue }
   if (Test-Path $legacyExe) {
     Say "옛 이름 ${LegacyName}을 지우고 udally-link로 바꿉니다(연결 토큰은 그대로 옮겨 씁니다)."
     if ($Dry) { Say "[dry-run] stop $legacyExe, remove $LegacyName.lnk, uv tool uninstall $LegacyName" }
