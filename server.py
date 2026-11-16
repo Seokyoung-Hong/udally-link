@@ -39,7 +39,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 import backends
-from backends import NEMOTRON, OOM
+from backends import BUZZ_KO, KO_EN, KOREAN, NEMOTRON, OOM
 from whisper_runtime import profile
 
 VERSION = "0.1.0"
@@ -53,8 +53,7 @@ if BACKEND.name == "rocm":
 TORCH = backends.Torch()
 PRESETS = [m for m in (x.strip() for x in env(
     "LINK_MODELS",
-    "Systran/faster-whisper-small,Systran/faster-whisper-medium,"
-    f"deepdml/faster-whisper-large-v3-turbo-ct2,Systran/faster-whisper-large-v3,{NEMOTRON}",
+    f"Systran/faster-whisper-small,Systran/faster-whisper-large-v3,{BUZZ_KO},{KO_EN},{NEMOTRON}",
 ).split(",")) if m and (TORCH.supports(m) and HAS_TORCH and BACKEND.name in ("cuda", "cpu") or BACKEND.supports(m))]
 API_KEY = env("LINK_API_KEY") or None
 FORCED_CT = env("LINK_COMPUTE_TYPE") or None
@@ -235,6 +234,10 @@ def meta(model_id: str) -> dict:
     if model_id == NEMOTRON:
         return {"owned_by": "nvidia", "family": "Nemotron", "display_name": "NVIDIA Nemotron 3.5 ASR 0.6B",
                 "base_model": NEMOTRON, "source": NEMOTRON, "format": "Transformers"}
+    if model_id in KOREAN:  # 한국어 파인튜닝(바탕은 large-v3). 우리가 올린 CTranslate2 변환본을 받는다.
+        owner, name, base = KOREAN[model_id]
+        return {"owned_by": owner, "family": "Whisper", "display_name": name, "base_model": base,
+                "source": model_id, "format": fmt}
     m = re.search(r"whisper-(tiny|base|small|medium|large-v3-turbo|large-v3|large-v2|large)", model_id.lower())
     if not m:  # ponytail: 프리셋은 전부 Whisper 변환본이다. 다른 계열을 넣으면 여기에 규칙을 더한다.
         return {"owned_by": model_id.split("/")[0], "family": None, "display_name": model_id, "source": model_id}

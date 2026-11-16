@@ -111,7 +111,7 @@ LINK_API_KEY=... LINK_HOST=0.0.0.0 LINK_PORT=8000 uv run server.py
 | 이름 | 기본값 | 설명 |
 |---|---|---|
 | `LINK_API_KEY` | (없음) | 정하면 모든 경로에 `Authorization: Bearer <키>`가 필요합니다. 비우면 무인증입니다. |
-| `LINK_MODELS` | 아래 프리셋 5개(Nemotron은 해당 이미지에서만) | `/v1/models`에 보일 모델 ID(쉼표 구분). 여기에 없는 ID는 404입니다. |
+| `LINK_MODELS` | 아래 프리셋 5개(Nemotron은 해당 이미지에서만, 한국어 파인튜닝은 Intel GPU 제외) | `/v1/models`에 보일 모델 ID(쉼표 구분). 여기에 없는 ID는 404입니다. |
 | `LINK_DEVICE` | `auto` | `auto`(NVIDIA > AMD > Intel > CPU) · `cuda` · `rocm` · `openvino` · `cpu` |
 | `LINK_GPUS` | 전부 | 쓸 GPU 번호(nvidia-smi·HIP·OpenVINO `GPU.n` 번호). 예 `0,1`. `CUDA_VISIBLE_DEVICES`와 함께 쓰지 마세요(번호가 어긋납니다). |
 | `LINK_CPU_FALLBACK` | `0` | GPU 오류 시 기본적으로 중단합니다. `1`로 명시한 경우에만 CPU 전환을 허용합니다. GPU가 처음부터 없는 자동 감지 환경은 CPU를 사용합니다. |
@@ -132,10 +132,10 @@ LINK_API_KEY=... LINK_HOST=0.0.0.0 LINK_PORT=8000 uv run server.py
 
 | 모델 ID(`stt_model` 값) | 표시 이름 | 파일 | 권장 장비 | 필요 메모리 추정(동시 3) GPU float16 / GPU int8_float16 / CPU int8 | 속도 근거 |
 |---|---|---|---|---|---|
-| `Systran/faster-whisper-small` | OpenAI Whisper small | 0.49GB | **CPU 기본**, 약한 GPU | 1.3GB / 1.0GB / 1.5GB | 원본 대비 약 4배 빠름¹. 이 PC CPU(uv)에서 6.3초 음성 1.2~2.5초 |
-| `Systran/faster-whisper-medium` | OpenAI Whisper medium | 1.53GB | 여유 있는 CPU, 4GB GPU | 2.6GB / 1.7GB / 2.2GB | 약 2배¹ |
-| `deepdml/faster-whisper-large-v3-turbo-ct2` | OpenAI Whisper large-v3-turbo | 1.62GB | **GPU 기본** | 2.7GB / 1.7GB / 2.2GB | 약 8배¹. 이 PC GPU 2장에서 6.3초 음성 3동시 0.4~0.8초 |
-| `Systran/faster-whisper-large-v3` | OpenAI Whisper large-v3 | 3.09GB | 6GB 이상 GPU(최고 품질) | 4.4GB / 2.6GB / 3.1GB | 1배(기준)¹ |
+| `Systran/faster-whisper-small` | OpenAI Whisper small | 0.49GB | **CPU 전용 PC**(품질 낮음) | 1.3GB / 1.0GB / 1.5GB | 원본 대비 약 4배 빠름¹. 이 PC CPU(uv)에서 6.3초 음성 1.2~2.5초 |
+| `Systran/faster-whisper-large-v3` | OpenAI Whisper large-v3 | 3.09GB | 6GB 이상 GPU, Intel GPU | 4.4GB / 2.6GB / 3.1GB | 1배(기준)¹ |
+| `SiliconDioxide/faster-whisper-buzzasr-korean` | BuzzASR Korean (Whisper large-v3) | 3.09GB | **6GB 이상 GPU, 한국어 권장** | large-v3와 같음 | large-v3와 같음² |
+| `SiliconDioxide/faster-whisper-large-v3-ko-en-v2` | Whisper large-v3 ko-en v2 | 3.09GB | 6GB 이상 GPU, 한·영 혼합 | large-v3와 같음 | large-v3와 같음² |
 | `nvidia/nemotron-3.5-asr-streaming-0.6b` | NVIDIA Nemotron 3.5 ASR 0.6B | 2.55GB(float32) | NVIDIA GPU, **`udally-link:nemotron` 이미지에서만 보임** | 2.1GB(GPU당, 실측 약 1.4GB) / (없음) / CPU float32 3.9GB | 이 PC GPU 2장(float16)에서 6.3초 음성 단건 0.4~0.7초, 3동시 0.7~1.0초(rtf 0.16~0.23). 첫 적재 약 14초 |
 
 ### 모델 라이선스
@@ -145,21 +145,22 @@ LINK_API_KEY=... LINK_HOST=0.0.0.0 LINK_PORT=8000 uv run server.py
 | 모델 ID | 가중치(원본) | 변환본 | 상업 사용 |
 |---|---|---|---|
 | `Systran/faster-whisper-small` | MIT — [openai/whisper README "License"](https://github.com/openai/whisper#license)("code and model weights are released under the MIT License"). HF [openai/whisper-small](https://huggingface.co/openai/whisper-small) 표기는 Apache-2.0 | MIT — [HF 카드](https://huggingface.co/Systran/faster-whisper-small) | 가능 |
-| `Systran/faster-whisper-medium` | 위와 같음([openai/whisper-medium](https://huggingface.co/openai/whisper-medium) 표기 Apache-2.0) | MIT — [HF 카드](https://huggingface.co/Systran/faster-whisper-medium) | 가능 |
-| `deepdml/faster-whisper-large-v3-turbo-ct2` | MIT — [openai/whisper-large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo) | MIT — [HF 카드](https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2) | 가능 |
 | `Systran/faster-whisper-large-v3` | 위 MIT([openai/whisper-large-v3](https://huggingface.co/openai/whisper-large-v3) 표기 Apache-2.0) | MIT — [HF 카드](https://huggingface.co/Systran/faster-whisper-large-v3) | 가능 |
+| `SiliconDioxide/faster-whisper-buzzasr-korean` | MIT — [BuzzASR/korean](https://huggingface.co/BuzzASR/korean)(large-v3를 FLEURS·Common Voice로 한국어 파인튜닝) | 원본 라이선스 그대로 — `scripts/convert_ct2.py`로 만든 float16 사본 | 가능 |
+| `SiliconDioxide/faster-whisper-large-v3-ko-en-v2` | Apache-2.0 — [gcasey2/whisper-large-v3-ko-en-v2](https://huggingface.co/gcasey2/whisper-large-v3-ko-en-v2) | 원본 라이선스 그대로 — 같은 스크립트 | 가능 |
 | `nvidia/nemotron-3.5-asr-streaming-0.6b` | [OpenMDW-1.1](https://openmdw.ai/license/1-1/) — "deal in the Model Materials without restriction", 배포 시 라이선스 사본·고지 유지, 특허 소송 시 종료. 출력물에는 제한 없음 | (원본 그대로 사용) | 가능 |
 
 - 원본 Whisper는 GitHub(MIT)과 HF(Apache-2.0) 표기가 다르지만 둘 다 상업 사용을 허용합니다.
 - 실행 라이브러리: faster-whisper·CTranslate2 MIT, PyTorch BSD-3, Transformers Apache-2.0, OpenVINO Apache-2.0.
-- `deepdml/faster-whisper-large-v3-turbo-ct2`는 원본 `openai/whisper-large-v3-turbo`(MIT)의 변환본입니다. Intel용 OpenVINO 공식 변환본은 `OpenVINO/whisper-{small,medium,large-v3}-*-ov` Apache-2.0, `OpenVINO/whisper-large-v3-turbo-*-ov` MIT입니다(HF API).
+- Intel용 OpenVINO 공식 변환본은 `OpenVINO/whisper-{small,large-v3}-*-ov`(Apache-2.0)입니다(HF API). 한국어 파인튜닝 두 모델은 OpenVINO 변환본이 없어 Intel GPU 목록에 나오지 않습니다.
+- 2026-11-16 정리: medium·large-v3-turbo를 뺐습니다. NoteMaker 비교(`reports/한국어_파인튜닝_모델_비교_2026-11-15.md`, 강의 녹음 6개·109개)에서 turbo 계열은 영어를 한글 소리로 적고 문장을 지어내 쓸 수 없었고, 원본 turbo도 large-v3보다 부정확했습니다(10-27 시험).
 
 - ¹ [openai/whisper README "Available models"](https://github.com/openai/whisper#available-models-and-languages)의 상대 속도(원본 PyTorch 기준. 같은 표의 VRAM 1~10GB는 PyTorch fp32 수치라 이 서버보다 큽니다).
 - 필요 메모리 추정식(`server.py`의 `need_mb`): `가중치 × 1.25 + 150MB × 동시 수 + 300MB(CPU는 800MB)`. 가중치는 model.bin 크기(float16 저장), int8 계열은 그 절반입니다. 근거:
   - 이 PC 실측(RTX 5060 Ti): large-v3-turbo float16 적재 +2.0GB, 3동시 전사 +0.35GB / int8_float16 적재 +1.05GB, 3동시 +0.22GB. `num_workers=3`이어도 가중치는 한 벌만 올라갑니다(1과 3이 같은 2.0GB).
   - [faster-whisper 벤치마크](https://github.com/SYSTRAN/faster-whisper#benchmark): large-v2 GPU fp16 4,525MB · int8 2,926MB, small CPU int8 1,477MB.
-- 모든 프리셋은 CTranslate2 변환본이고 원본 저장소는 `base_model`(예 `openai/whisper-large-v3-turbo`)에 나옵니다. 라이선스: Systran 변환본·원본 Whisper MIT, deepdml 변환본 MIT(HF 카드 기준).
-- 한국어 품질 수치(모델별 한국어 WER/CER)는 공개 출처에서 확인하지 못했습니다(확인 불가). 이 PC의 한국어 합성 음성 문장 시험(저장소에 두지 않음)에서는 small·large-v3-turbo 모두 문장을 정확히 옮겼습니다(turbo는 "다음주"로 붙여 씀).
+- 모든 Whisper 프리셋은 CTranslate2 변환본이고 원본 저장소는 `base_model`(예 `BuzzASR/korean`)에 나옵니다.
+- ² 한국어 파인튜닝 두 모델은 구조가 large-v3와 같아 속도·메모리도 같습니다(109분 녹음 배치 226초 + 메우기 14초, RTX 5060 Ti). NoteMaker 비교 결과: BuzzASR은 키워드 나열 환각 30줄 → 2줄, 누락·반복 의심 구간 410 → 8(109개), 영어 용어도 덜 빠뜨립니다. 대신 문장부호를 자주 빼고 영어 용어를 소문자로 적습니다. ko-en v2는 누락이 없고 문장부호가 좋지만 "어, 음" 같은 군말까지 적고 영어 용어를 덜 잡습니다. 정답 전사본이 없어 CER은 재지 못했습니다.
 
 ### Nemotron 3.5 ASR 메모
 

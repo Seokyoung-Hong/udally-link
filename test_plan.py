@@ -70,7 +70,8 @@ assert sorted(backends.gfx_targets(str(d / "kfd"))) == ["gfx1101", "gfx1201"]
 assert backends.gfx_index(["gfx1101"]) == "gfx110X-all" and backends.gfx_index(["gfx1030"]) == "gfx103X-all"
 assert backends.gfx_index(["gfx1151"]) == "gfx1151" and backends.gfx_index(["gfx906"]) is None
 ov = backends.OpenVINO()
-assert ov.repo("deepdml/faster-whisper-large-v3-turbo-ct2", "float16") == "OpenVINO/whisper-large-v3-turbo-fp16-ov"
+assert ov.repo("Systran/faster-whisper-large-v3", "float16") == "OpenVINO/whisper-large-v3-fp16-ov"
+assert not ov.supports(backends.BUZZ_KO) and backends.CT2("cuda").supports(backends.BUZZ_KO)
 assert not ov.supports(backends.NEMOTRON) and backends.CT2("cpu").supports("Systran/faster-whisper-small")
 assert ov.weights({"openvino_encoder_model.bin": 2**29, "openvino_decoder_model.bin": 2**29}, "x", "int8") == 2048
 assert backends.OOM.search("hipErrorOutOfMemory") and backends.OOM.search("CUDA failed with error out of memory")

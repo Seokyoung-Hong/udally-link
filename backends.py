@@ -64,6 +64,12 @@ def env(name: str, default=None):
 
 
 NEMOTRON = "nvidia/nemotron-3.5-asr-streaming-0.6b"
+# 한국어 파인튜닝 Whisper(NoteMaker 보고서 한국어_파인튜닝_모델_비교_2026-11-15). 원본은 transformers 형식뿐이라
+# scripts/convert_ct2.py로 CTranslate2 float16 변환본을 만들어 올렸다. OpenVINO 변환본은 없다.
+BUZZ_KO = "SiliconDioxide/faster-whisper-buzzasr-korean"
+KO_EN = "SiliconDioxide/faster-whisper-large-v3-ko-en-v2"
+KOREAN = {BUZZ_KO: ("BuzzASR", "BuzzASR Korean (Whisper large-v3)", "BuzzASR/korean"),
+          KO_EN: ("gcasey2", "Whisper large-v3 ko-en v2", "gcasey2/whisper-large-v3-ko-en-v2")}
 GPU_FILTER = {int(i) for i in env("LINK_GPUS", "").split(",") if i.strip()}  # 비우면 전부
 OOM = re.compile(r"out of (gpu |device )?memory|hipErrorOutOfMemory|CL_OUT_OF_RESOURCES|MEM_OBJECT_ALLOCATION", re.I)
 CT2_FILES = ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*"]
@@ -71,8 +77,6 @@ CT2_FILES = ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.
 NEMOTRON_FILES = ["config.json", "generation_config.json", "processor_config.json", "tokenizer*.json", "model.safetensors"]
 # 프리셋 id(CT2 변환본) → OpenVINO 공식 IR 저장소 앞부분. 정밀도마다 저장소가 따로 있다(-fp16-ov·-int8-ov·-int4-ov).
 OV_REPOS = {"Systran/faster-whisper-small": "OpenVINO/whisper-small",
-            "Systran/faster-whisper-medium": "OpenVINO/whisper-medium",
-            "deepdml/faster-whisper-large-v3-turbo-ct2": "OpenVINO/whisper-large-v3-turbo",
             "Systran/faster-whisper-large-v3": "OpenVINO/whisper-large-v3"}
 OV_SUFFIX = {"float16": "fp16", "int8": "int8", "int4": "int4"}
 
